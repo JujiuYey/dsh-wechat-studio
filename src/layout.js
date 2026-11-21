@@ -38,7 +38,7 @@ export async function renderLayout(markdown, { style, theme, banner, followCard 
   return { html, report: report.trim() }
 }
 
-const SVG_CARD_KINDS = ['svg-table', 'svg-bars', 'svg-steps', 'svg-timeline', 'svg-breakdown', 'svg-compare', 'svg-concept', 'svg-phone']
+export const SVG_CARD_KINDS = ['svg-table', 'svg-bars', 'svg-steps', 'svg-timeline', 'svg-breakdown', 'svg-compare', 'svg-concept', 'svg-phone']
 const SVG_ELEMENTS = new Set(['section', 'svg', 'g', 'rect', 'circle', 'line', 'path', 'text', 'animate', 'animateTransform', 'set'])
 const SVG_ATTRIBUTES = new Set([
   'xmlns', 'viewBox', 'width', 'height', 'style', 'opacity', 'x', 'y', 'rx', 'ry', 'fill', 'stroke',

@@ -279,6 +279,46 @@ an OVERSIZED, RELAXED-FIT heavyweight waffle-knit short-sleeve polo shirt in Mid
 
 </details>
 
+<details>
+<summary><strong>作为 CLI 供其他 Agent 调用（不依赖 DSH 宿主）</strong></summary>
+
+在保留全部 DeepSeek Harness 插件能力的同时，仓库也提供独立命令行入口 `wechat-studio`（`bin/wechat-studio.js`），可供 Claude Code、Codex、Cursor 等外部 Agent 或自动化脚本直接调用。默认与插件共用 `~/.dsh/wechat-studio/` 数据目录，也可用 `--data-dir <path>` 隔离运行。
+
+```bash
+# 直接运行（或 npm link 后全局使用 wechat-studio）
+npx dsh-wechat-studio --help
+
+# Markdown 排成公众号 HTML（--json 保证 stdout 输出单行结构化 JSON）
+wechat-studio layout article.md --style neo --theme forest --out preview.html --json
+
+# 渲染单张公众号 SMIL 动画 SVG 卡片
+wechat-studio svg-card svg-steps --title "写作流程" --line "收集素材" --line "起草改稿" --out card.html --json
+
+# 稿件库与复盘数据（与 DSH 插件实时共享）
+wechat-studio articles import article.md --json
+wechat-studio articles list --json
+wechat-studio insights import export.xls --json
+wechat-studio insights summary --range 30 --json
+
+# 查看当前生效的技能文件路径（内置或个人写作风格覆盖）
+wechat-studio skills --json
+
+# 朱雀检测与封面生成（封面支持 --prompt-only / --prompt-file 零模型 Key 闭环）
+wechat-studio detect article.md --json
+wechat-studio cover article.md --style felt --out cover.png --json
+wechat-studio cover --prompt-file final-prompt.txt --style felt --out cover.png --json
+
+# 个人写作风格（外部 Agent 可加 --prompt-only 免额外模型密钥）
+wechat-studio style status --json
+wechat-studio style analyze sample1.md sample2.md --prompt-only --json
+wechat-studio style apply profile.json --json
+wechat-studio style restore --json
+```
+
+给外部 Agent 配套的技能说明位于 [skills/cli-agent/SKILL.md](skills/cli-agent/SKILL.md)。
+
+</details>
+
 ## 开发
 
 ```bash

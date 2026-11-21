@@ -1,0 +1,754 @@
+// 微信公众号成稿台独立 CLI：复用 src/*.js 核心能力，供外部 Agent 与脚本调用。
+// 不修改 DSH 插件逻辑；默认共享 <DSH_HOME>/wechat-studio 数据目录，也可通过 --data-dir 隔离。
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { basename, dirname, join } from 'node:path'
+import { parseArgs } from 'node:util'
+import { skillSources } from './ai.js'
+import { createArticle, listMeta, splitMarkdown, toMarkdown } from './article.js'
+import { createStandaloneCtx, resolveStandaloneLlmConfig } from './cli-llm.js'
+import { COVER_FORMATS, COVER_PROVIDERS, COVER_RESOLUTIONS, providerFormats } from './cover-options.js'
+import { buildCoverPromptRequest } from './cover-prompt.js'
+import { COVER_STYLES } from './cover-styles.js'
+import { coverPrompt, generateArkCover, generateBailianCover, readCover, saveCover } from './cover.js'
+import { buildInsights, importData, INSIGHTS_EMPTY } from './insights.js'
+import { detectionText, renderLayout, renderSvgCard, resolveLayoutPreferences, STYLES, SVG_CARD_KINDS, THEMES } from './layout.js'
+import { readSettings } from './settings.js'
+import { dshHome, JsonStore, Store } from './store.js'
+import { analyzeWritingStyle, applyWritingStyle, buildAnalyzePrompt, buildPreviewPrompt, previewWritingStyle, readStyleState, restoreDefaultStyle } from './writing-style.js'
+import { DEFAULT_ENDPOINT, detect, mapSegments } from './zhuque.js'
+
+const { version: VERSION } = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'))
+
+const ENV_ZHUQUE_KEY = ['ZHUQUE', 'API', 'KEY'].join('_')
+const ENV_ARK_KEY = ['ARK', 'API', 'KEY'].join('_')
+const ENV_BAILIAN_KEY = ['BAILIAN', 'API', 'KEY'].join('_')
+
+class UsageError extends Error {
+  constructor(message) {
+    super(message)
+    this.code = 'USAGE'
+    this.exitCode = 2
+  }
+}
+
+const GLOBAL_OPTIONS = {
+  json: { type: 'boolean', default: false },
+  'data-dir': { type: 'string' },
+  help: { type: 'boolean', short: 'h', default: false },
+  version: { type: 'boolean', short: 'v', default: false },
+}
+
+const LLM_OPTIONS = {
+  model: { type: 'string' },
+  'base-url': { type: 'string' },
+}
+
+const VALUE_FLAGS = new Set([
+  '--data-dir', '--style', '--theme', '--out', '--title', '--line', '--lines-file',
+  '--range', '--key', '--endpoint', '--resolution', '--format', '--provider',
+  '--prompt-file', '--note', '--topic', '--model', '--base-url',
+])
+
+const HELP_TEXT = `wechat-studio v${VERSION} — 微信公众号成稿台 CLI（兼容 DeepSeek Harness 插件工作区）
+
+用法:
+  wechat-studio <command> [options]
+
+子命令:
+  layout <file.md|->             将 Markdown 排成公众号 HTML 页面
+  svg-card <kind>                渲染单张公众号 SMIL 动画 SVG 卡片
+  detect <file.md|->             调用朱雀文本检测并定位标红段落
+  cover [file.md|-]              生成 2.35:1 公众号封面（支持 --prompt-only / --prompt-file）
+  skills                         查看当前工作区生效的技能文件路径（内置或个人覆盖）
+  articles <list|get|import>     管理工作区稿件（与 DSH 插件实时共享）
+  insights <import|summary>      导入公众号后台数据或输出复盘指标
+  style <status|analyze|preview|apply|restore>
+                                 管理个人写作风格（支持 --prompt-only）
+
+全局选项:
+  --json                         仅在 stdout 输出单行结构化 JSON（供 Agent 解析）
+  --data-dir <path>              指定工作区目录（默认 <DSH_HOME>/wechat-studio）
+  -v, --version                  显示版本号
+  -h, --help                     显示帮助（支持 wechat-studio <command> --help）
+`
+
+const SUB_HELP = {
+  layout: `用法: wechat-studio layout <file.md|-> [options]
+选项:
+  --style <id>       正文风格（${STYLES.join(', ')}）
+  --theme <id>       配色主题（${THEMES.join(', ')}）
+  --follow-card      包含文末关注卡
+  --out <file.html>  输出 HTML 到文件（推荐 Agent 配合 --json 使用，避免大体积 HTML 占满上下文）
+  --data-dir <path>  指定工作区目录
+  --json             输出单行 JSON`,
+
+  'svg-card': `用法: wechat-studio svg-card <kind> --title <标题> (--line <条目>... | --lines-file <文件|->) [options]
+卡型 (<kind>):
+  ${SVG_CARD_KINDS.join(', ')}
+选项:
+  --title <text>     卡片标题（必填）
+  --line <text>      卡片条目（可重复传入）
+  --lines-file <f>   从文件或 -（stdin）按行读取条目
+  --style <id>       正文风格（默认 std）
+  --theme <id>       配色主题（默认 orange）
+  --out <file.html>  输出 HTML 到文件
+  --json             输出单行 JSON`,
+
+  detect: `用法: wechat-studio detect <file.md|-> [options]
+选项:
+  --key <key>        朱雀 API Key（默认读环境变量或工作区设置）
+  --endpoint <url>   自定义 EdgeOne 网关地址（仅支持 https://）
+  --data-dir <path>  指定工作区目录
+  --json             输出单行 JSON`,
+
+  cover: `用法: wechat-studio cover <file.md|-> [options]
+      wechat-studio cover --prompt-file <file|-> [options]
+选项:
+  --style <id>       封面风格（${COVER_STYLES.map(s => s.id).join(', ')}，默认 classic）
+  --resolution <r>   分辨率（${COVER_RESOLUTIONS.join(', ')}，默认 2K）
+  --format <fmt>     输出格式（${COVER_FORMATS.join(', ')}，默认 png）
+  --provider <p>     生图提供方（${COVER_PROVIDERS.map(p => p.id).join(', ')}）
+  --prompt-only      零密钥模式：仅输出封面模板、slots、fragments、personSegments 及 system/user
+  --prompt-file <f>  直接读取最终生图提示词文件（或 - 读 stdin），跳过模型填槽直接生图并裁切
+  --out <file>       将裁切后的 2.35:1 封面另存到指定路径
+  --model <id>       覆盖独立模型名称
+  --base-url <url>   覆盖独立模型接口地址
+  --data-dir <path>  指定工作区目录
+  --json             输出单行 JSON`,
+
+  skills: `用法: wechat-studio skills [options]
+说明: 列出当前工作区各技能（writer/headline/humanizer/cover 等）实际生效的文件路径及来源（user/bundled）。
+选项:
+  --data-dir <path>  指定工作区目录
+  --json             输出单行 JSON`,
+
+  articles: `用法: wechat-studio articles <list|get|import> [options]
+子命令:
+  list [--archived]        列出稿件（默认未归档）
+  get <id>                 读取指定稿件 Markdown 与元数据
+  import <file.md|->       导入 Markdown 到工作区（与 DSH 插件实时共享）`,
+
+  insights: `用法: wechat-studio insights <import|summary> [options]
+子命令:
+  import <file.xls> [--range 7|30|all]  导入公众号后台导出 XLS
+  summary [--range 7|30|all]            输出复盘汇总指标`,
+
+  style: `用法: wechat-studio style <status|analyze|preview|apply|restore> [options]
+子命令:
+  status                                                     查看个人风格启用状态
+  analyze <f1.md|-> [f2.md...] [--note <t>] [--out <p.json>] [--prompt-only]
+                                                             分析参考文章提炼风格档案
+  preview <profile.json|-> [--topic <t>] [--prompt-only]     按风格档案现场试写
+  apply <profile.json|-> [--no-writer] [--no-headline]       启用个人风格并写入 skills/
+  restore [--backup]                                         恢复内置默认风格（或恢复 .bak 备份）`,
+}
+
+function scrubSecrets(text, secrets = []) {
+  let out = String(text ?? '')
+  for (const s of secrets) {
+    if (s) out = out.split(s).join('[已隐藏]')
+  }
+  return out.replace(/Bearer\s+\S+/gi, 'Bearer [已隐藏]')
+}
+
+function writeLine(stream, text) {
+  stream.write(`${text}\n`)
+}
+
+function emitSuccess(io, isJson, payload, humanText) {
+  if (isJson) {
+    writeLine(io.stdout, JSON.stringify({ ok: true, ...payload }))
+  } else if (humanText != null) {
+    writeLine(io.stdout, humanText)
+  }
+  return 0
+}
+
+function emitError(io, isJson, err, secrets = []) {
+  const exitCode = err?.exitCode === 2 ? 2 : 1
+  const code = exitCode === 2 ? 'USAGE' : 'RUNTIME'
+  const causeCode = exitCode === 1 && typeof err?.code === 'string' && err.code !== 'RUNTIME' ? err.code : undefined
+  const message = scrubSecrets(err?.message || String(err), secrets)
+  if (isJson) {
+    writeLine(io.stdout, JSON.stringify({ ok: false, code, ...(causeCode ? { causeCode } : {}), error: message }))
+  } else {
+    writeLine(io.stderr, `错误：${message}`)
+  }
+  return exitCode
+}
+
+function hasJsonFlag(argv) {
+  for (let i = 0; i < argv.length; i++) {
+    const token = argv[i]
+    if (token === '--') return false
+    if (token === '--json') return true
+    if (VALUE_FLAGS.has(token)) i += 1
+  }
+  return false
+}
+
+function parseSubcommandArgs(argv, extraOptions = {}) {
+  try {
+    return parseArgs({
+      args: argv,
+      options: { ...GLOBAL_OPTIONS, ...extraOptions },
+      strict: true,
+      allowPositionals: true,
+    })
+  } catch (err) {
+    throw new UsageError(err.message)
+  }
+}
+
+function assertPositionals(positionals, max, usage) {
+  if (positionals.length > max) {
+    throw new UsageError(`参数过多：${positionals.slice(max).join(' ')}。${usage}`)
+  }
+}
+
+async function readStdin(io) {
+  const source = io.stdin ?? process.stdin
+  if (typeof source === 'string') return source
+  if (Buffer.isBuffer(source)) return source.toString('utf8')
+  const chunks = []
+  for await (const chunk of source) {
+    chunks.push(typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : chunk)
+  }
+  return Buffer.concat(chunks).toString('utf8')
+}
+
+async function readTextFile(filePath, label = '文件', io = null) {
+  if (!filePath) throw new UsageError(`缺少${label}路径。`)
+  if (filePath === '-') return readStdin(io ?? {})
+  try {
+    return await readFile(filePath, 'utf8')
+  } catch (err) {
+    if (err.code === 'ENOENT') throw new UsageError(`找不到${label}：${filePath}`)
+    throw err
+  }
+}
+
+async function readJsonFile(filePath, label = 'JSON 文件', io = null) {
+  const raw = await readTextFile(filePath, label, io)
+  try {
+    return JSON.parse(raw)
+  } catch {
+    throw new UsageError(`${label}不是有效的 JSON：${filePath}`)
+  }
+}
+
+async function writeOutFile(outPath, content) {
+  await mkdir(dirname(outPath), { recursive: true })
+  await writeFile(outPath, content)
+}
+
+function resolveDataDir(values, env) {
+  if (values['data-dir']) return values['data-dir']
+  if (env.DSH_HOME) return join(env.DSH_HOME, 'wechat-studio')
+  return join(dshHome(), 'wechat-studio')
+}
+
+function resolveCtx(io, values, secrets) {
+  if (io.ctx) return io.ctx
+  const cfg = resolveStandaloneLlmConfig(io.env, {
+    model: values.model,
+    baseUrl: values['base-url'],
+  })
+  if (cfg.apiKey) secrets.push(cfg.apiKey)
+  return createStandaloneCtx({ ...cfg, fetchImpl: io.fetchImpl })
+}
+
+function extractCommand(argv) {
+  for (let i = 0; i < argv.length; i++) {
+    const token = argv[i]
+    if (token === '--') return null
+    if (token.startsWith('-')) {
+      if (VALUE_FLAGS.has(token)) i += 1
+      continue
+    }
+    return { command: token, index: i }
+  }
+  return null
+}
+
+function splitSubAction(argv) {
+  const found = extractCommand(argv)
+  if (!found) return { action: null, rest: argv }
+  return {
+    action: found.command,
+    rest: [...argv.slice(0, found.index), ...argv.slice(found.index + 1)],
+  }
+}
+
+async function handleLayout(argv, io) {
+  const { values, positionals } = parseSubcommandArgs(argv, {
+    style: { type: 'string' },
+    theme: { type: 'string' },
+    'follow-card': { type: 'boolean', default: false },
+    out: { type: 'string' },
+  })
+  if (values.help) return emitSuccess(io, values.json, { help: SUB_HELP.layout }, SUB_HELP.layout)
+  const usage = '用法：wechat-studio layout <file.md|-> [--style <id>] [--theme <id>] [--follow-card] [--out <file.html>]'
+  assertPositionals(positionals, 1, usage)
+  const file = positionals[0]
+  if (!file) throw new UsageError(usage)
+  if (values.style && !STYLES.includes(values.style)) {
+    throw new UsageError(`不支持的排版风格：${values.style}（可选：${STYLES.join(', ')}）`)
+  }
+  if (values.theme && !THEMES.includes(values.theme)) {
+    throw new UsageError(`不支持的配色主题：${values.theme}（可选：${THEMES.join(', ')}）`)
+  }
+  const dataDir = resolveDataDir(values, io.env)
+  const [markdown, settings] = await Promise.all([readTextFile(file, 'Markdown 文件', io), readSettings(dataDir)])
+  const prefs = resolveLayoutPreferences(settings)
+  const style = values.style ?? prefs.style
+  const theme = values.theme ?? prefs.theme
+  const { html, report } = await renderLayout(markdown, {
+    style,
+    theme,
+    followCard: values['follow-card'],
+    brand: settings.brand,
+  })
+  if (values.out) await writeOutFile(values.out, html)
+  const payload = {
+    style,
+    theme,
+    out: values.out ?? null,
+    chars: html.length,
+    report,
+    ...(values.out ? {} : { html }),
+  }
+  const text = values.out
+    ? `已生成排版页面：${values.out}（${style} · ${theme}，${html.length} 字符）${report ? `\n${report}` : ''}`
+    : html
+  return emitSuccess(io, values.json, payload, text)
+}
+
+async function handleSvgCard(argv, io) {
+  const { values, positionals } = parseSubcommandArgs(argv, {
+    title: { type: 'string' },
+    line: { type: 'string', multiple: true },
+    'lines-file': { type: 'string' },
+    style: { type: 'string', default: 'std' },
+    theme: { type: 'string', default: 'orange' },
+    out: { type: 'string' },
+  })
+  if (values.help) return emitSuccess(io, values.json, { help: SUB_HELP['svg-card'] }, SUB_HELP['svg-card'])
+  const usage = '用法：wechat-studio svg-card <kind> --title <标题> (--line <条目>... | --lines-file <文件|->) [--style <id>] [--theme <id>] [--out <file.html>]'
+  assertPositionals(positionals, 1, usage)
+  const kind = positionals[0]
+  if (!kind || !values.title) throw new UsageError(usage)
+  if (!SVG_CARD_KINDS.includes(kind)) {
+    throw new UsageError(`不支持的 SVG 卡片类型：${kind}（可选：${SVG_CARD_KINDS.join(', ')}）`)
+  }
+  if (!STYLES.includes(values.style)) throw new UsageError(`不支持的风格：${values.style}`)
+  if (!THEMES.includes(values.theme)) throw new UsageError(`不支持的配色：${values.theme}`)
+  let lines = Array.isArray(values.line) ? [...values.line] : []
+  if (values['lines-file']) {
+    const raw = await readTextFile(values['lines-file'], '条目文件', io)
+    lines.push(...raw.split(/\r?\n/).map(s => s.trim()).filter(Boolean))
+  }
+  if (!lines.length) throw new UsageError('请至少通过 --line 或 --lines-file 提供一条卡片内容。')
+  const { html, report } = await renderSvgCard(
+    { kind, title: values.title, lines },
+    { style: values.style, theme: values.theme },
+  )
+  if (values.out) await writeOutFile(values.out, html)
+  const payload = { kind, title: values.title, style: values.style, theme: values.theme, out: values.out ?? null, report, html }
+  const text = values.out ? `已生成 SVG 动画卡：${values.out}` : html
+  return emitSuccess(io, values.json, payload, text)
+}
+
+async function handleSkills(argv, io) {
+  const { values, positionals } = parseSubcommandArgs(argv)
+  if (values.help) return emitSuccess(io, values.json, { help: SUB_HELP.skills }, SUB_HELP.skills)
+  assertPositionals(positionals, 0, '用法：wechat-studio skills [--data-dir <path>] [--json]')
+  const dir = join(resolveDataDir(values, io.env), 'skills')
+  const skills = await skillSources(dir)
+  const text = skills.map(s => `${s.name}\t${s.source}\t${s.path || '(缺失)'}`).join('\n')
+  return emitSuccess(io, values.json, { dir, skills }, text)
+}
+
+async function handleArticles(argv, io) {
+  const { action, rest } = splitSubAction(argv)
+  if (!action) {
+    const { values } = parseSubcommandArgs(rest)
+    return emitSuccess(io, values.json, { help: SUB_HELP.articles }, SUB_HELP.articles)
+  }
+  if (action === 'list') {
+    const { values, positionals } = parseSubcommandArgs(rest, { archived: { type: 'boolean', default: false } })
+    if (values.help) return emitSuccess(io, values.json, { help: SUB_HELP.articles }, SUB_HELP.articles)
+    assertPositionals(positionals, 0, '用法：wechat-studio articles list [--archived]')
+    const store = new Store(resolveDataDir(values, io.env))
+    const state = await store.read()
+    const items = state.articles
+      .filter(a => (values.archived ? Boolean(a.archivedAt) : !a.archivedAt))
+      .map(a => listMeta(a))
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+    const text = items.length
+      ? items.map(a => `${a.id}\t${a.chars}字\t${a.title}`).join('\n')
+      : '工作区里还没有稿件。'
+    return emitSuccess(io, values.json, { count: items.length, currentId: state.currentId, articles: items }, text)
+  }
+  if (action === 'get') {
+    const { values, positionals } = parseSubcommandArgs(rest)
+    if (values.help) return emitSuccess(io, values.json, { help: SUB_HELP.articles }, SUB_HELP.articles)
+    const usage = '用法：wechat-studio articles get <id>'
+    assertPositionals(positionals, 1, usage)
+    const id = positionals[0]
+    if (!id) throw new UsageError(usage)
+    const store = new Store(resolveDataDir(values, io.env))
+    const state = await store.read()
+    const article = state.articles.find(a => a.id === id)
+    if (!article) throw Object.assign(new Error(`找不到稿件：${id}`), { status: 404 })
+    const markdown = toMarkdown(article)
+    return emitSuccess(io, values.json, {
+      id: article.id,
+      title: article.title,
+      summary: article.summary,
+      updatedAt: article.updatedAt,
+      archivedAt: article.archivedAt ?? null,
+      blockCount: article.blocks.length,
+      markdown,
+    }, markdown)
+  }
+  if (action === 'import') {
+    const { values, positionals } = parseSubcommandArgs(rest)
+    if (values.help) return emitSuccess(io, values.json, { help: SUB_HELP.articles }, SUB_HELP.articles)
+    const usage = '用法：wechat-studio articles import <file.md|->'
+    assertPositionals(positionals, 1, usage)
+    const file = positionals[0]
+    if (!file) throw new UsageError(usage)
+    const markdown = await readTextFile(file, 'Markdown 文件', io)
+    if (!markdown.trim()) throw new UsageError('Markdown 文件为空。')
+    const store = new Store(resolveDataDir(values, io.env))
+    const article = createArticle({ markdown })
+    await store.update(state => {
+      if (state.lastLayoutPreferences) article.layoutPreferences = { ...state.lastLayoutPreferences }
+      state.articles.push(article)
+      state.currentId = article.id
+    })
+    return emitSuccess(io, values.json, {
+      id: article.id,
+      title: article.title,
+      blockCount: article.blocks.length,
+    }, `已导入稿件：${article.id}（${article.title}，${article.blocks.length} 段）`)
+  }
+  throw new UsageError(`未知的 articles 子命令：${action}（支持 list、get、import）`)
+}
+
+async function handleInsights(argv, io) {
+  const { action, rest } = splitSubAction(argv)
+  if (!action) {
+    const { values } = parseSubcommandArgs(rest)
+    return emitSuccess(io, values.json, { help: SUB_HELP.insights }, SUB_HELP.insights)
+  }
+  const validateRange = range => {
+    if (!['7', '30', 'all'].includes(range)) throw new UsageError(`无效的时间范围：${range}（可选：7、30、all）`)
+    return range
+  }
+  if (action === 'summary') {
+    const { values, positionals } = parseSubcommandArgs(rest, { range: { type: 'string', default: 'all' } })
+    if (values.help) return emitSuccess(io, values.json, { help: SUB_HELP.insights }, SUB_HELP.insights)
+    assertPositionals(positionals, 0, '用法：wechat-studio insights summary [--range 7|30|all]')
+    const range = validateRange(values.range)
+    const dataDir = resolveDataDir(values, io.env)
+    const store = new Store(dataDir)
+    const insightsStore = new JsonStore(dataDir, { file: 'insights.json', empty: INSIGHTS_EMPTY })
+    const [insights, state] = await Promise.all([insightsStore.read(), store.read()])
+    const summary = buildInsights(insights, state.articles, range)
+    const hasData = Boolean(summary.hasData)
+    return emitSuccess(io, values.json, { range, hasData, summary }, hasData ? JSON.stringify(summary, null, 2) : '还没有导入公众号后台数据。')
+  }
+  if (action === 'import') {
+    const { values, positionals } = parseSubcommandArgs(rest, { range: { type: 'string', default: 'all' } })
+    if (values.help) return emitSuccess(io, values.json, { help: SUB_HELP.insights }, SUB_HELP.insights)
+    const usage = '用法：wechat-studio insights import <file.xls> [--range 7|30|all]'
+    assertPositionals(positionals, 1, usage)
+    const range = validateRange(values.range)
+    const file = positionals[0]
+    if (!file) throw new UsageError(usage)
+    let buffer
+    try {
+      buffer = await readFile(file)
+    } catch (err) {
+      if (err.code === 'ENOENT') throw new UsageError(`找不到数据文件：${file}`)
+      throw err
+    }
+    const parsed = importData(buffer, basename(file))
+    const dataDir = resolveDataDir(values, io.env)
+    const store = new Store(dataDir)
+    const insightsStore = new JsonStore(dataDir, { file: 'insights.json', empty: INSIGHTS_EMPTY })
+    await insightsStore.update(state => {
+      if (parsed.kind !== 'detail') {
+        state[parsed.kind] = parsed
+        return
+      }
+      const existing = (state.details ?? []).find(detail => detail.key === parsed.key)
+      if (existing?.articleKey !== undefined) parsed.articleKey = existing.articleKey
+      if (existing?.topic) parsed.topic = existing.topic
+      state.details = [...(state.details ?? []).filter(detail => detail.key !== parsed.key), parsed]
+    })
+    const [insights, state] = await Promise.all([insightsStore.read(), store.read()])
+    const summary = buildInsights(insights, state.articles, range)
+    return emitSuccess(io, values.json, { importedKind: parsed.kind, range, summary }, `已导入复盘数据（类型：${parsed.kind}）。`)
+  }
+  throw new UsageError(`未知的 insights 子命令：${action}（支持 import、summary）`)
+}
+
+async function handleDetect(argv, io, secrets) {
+  const { values, positionals } = parseSubcommandArgs(argv, {
+    key: { type: 'string' },
+    endpoint: { type: 'string' },
+  })
+  if (values.help) return emitSuccess(io, values.json, { help: SUB_HELP.detect }, SUB_HELP.detect)
+  const usage = '用法：wechat-studio detect <file.md|-> [--key <key>] [--endpoint <url>]'
+  assertPositionals(positionals, 1, usage)
+  const file = positionals[0]
+  if (!file) throw new UsageError(usage)
+  const dataDir = resolveDataDir(values, io.env)
+  const [markdown, settings] = await Promise.all([readTextFile(file, 'Markdown 文件', io), readSettings(dataDir)])
+  const key = String(values.key ?? io.env[ENV_ZHUQUE_KEY] ?? settings.zhuqueKey ?? '').trim()
+  if (key) secrets.push(key)
+  if (!key) throw new UsageError(`缺少朱雀 API Key，请通过 --key、环境变量 ${ENV_ZHUQUE_KEY} 或工作区设置配置。`)
+  const endpoint = String(values.endpoint ?? settings.zhuqueEndpoint ?? DEFAULT_ENDPOINT).trim() || DEFAULT_ENDPOINT
+  const article = createArticle({ markdown })
+  const text = await detectionText(markdown, settings.fixedLines)
+  const result = await detect(text, { key, endpoint, fetchImpl: io.fetchImpl })
+  const mapped = mapSegments(article, result.segments)
+  const payload = {
+    overall: result.overall,
+    flagged: mapped.segments,
+    coveredBlocks: mapped.covered.size,
+    totalBlocks: article.blocks.length,
+    tokens: result.tokens,
+  }
+  const human = `朱雀检测完成：标红 ${mapped.segments.length} 段` + (result.overall ? `（人工 ${result.overall.human}% / 疑似 ${result.overall.suspect}% / AI ${result.overall.ai}%）` : '')
+  return emitSuccess(io, values.json, payload, human)
+}
+
+async function handleCover(argv, io, secrets) {
+  const { values, positionals } = parseSubcommandArgs(argv, {
+    ...LLM_OPTIONS,
+    style: { type: 'string', default: 'classic' },
+    resolution: { type: 'string', default: '2K' },
+    format: { type: 'string', default: 'png' },
+    provider: { type: 'string' },
+    out: { type: 'string' },
+    'prompt-only': { type: 'boolean', default: false },
+    'prompt-file': { type: 'string' },
+  })
+  if (values.help) return emitSuccess(io, values.json, { help: SUB_HELP.cover }, SUB_HELP.cover)
+  const usage = '用法：wechat-studio cover <file.md|-> [--style <id>] [--prompt-only] | wechat-studio cover --prompt-file <file|-> [--out <file>]'
+  if (values['prompt-only'] && values['prompt-file']) {
+    throw new UsageError('--prompt-only 和 --prompt-file 不能同时使用。')
+  }
+  assertPositionals(positionals, 1, usage)
+  const file = positionals[0]
+  if (!values['prompt-file'] && !file) throw new UsageError(usage)
+  if (!COVER_STYLES.some(item => item.id === values.style)) {
+    throw new UsageError(`不支持的封面风格：${values.style}（可选：${COVER_STYLES.map(s => s.id).join(', ')}）`)
+  }
+  if (!COVER_RESOLUTIONS.includes(values.resolution)) {
+    throw new UsageError(`不支持的分辨率：${values.resolution}（可选：${COVER_RESOLUTIONS.join(', ')}）`)
+  }
+  if (!COVER_FORMATS.includes(values.format)) {
+    throw new UsageError(`不支持的图片格式：${values.format}（可选：${COVER_FORMATS.join(', ')}）`)
+  }
+  const dataDir = resolveDataDir(values, io.env)
+  const settings = await readSettings(dataDir)
+  const provider = values.provider ?? settings.coverProvider ?? 'ark'
+  if (!COVER_PROVIDERS.some(p => p.id === provider)) {
+    throw new UsageError(`不支持的封面提供方：${provider}（可选：ark、bailian）`)
+  }
+  if (!values['prompt-only'] && !providerFormats(provider).includes(values.format)) {
+    throw new UsageError(`提供方 ${provider} 仅支持格式：${providerFormats(provider).join(', ')}`)
+  }
+  const referenceImage = values.style === 'felt' ? null : settings.portraitUrl || null
+
+  let prompt
+  if (values['prompt-file']) {
+    prompt = (await readTextFile(values['prompt-file'], '封面提示词文件', io)).trim()
+    if (!prompt) throw new UsageError('封面提示词文件为空。')
+  } else {
+    const markdown = await readTextFile(file, 'Markdown 文件', io)
+    const parsed = splitMarkdown(markdown)
+    const title = parsed.title || (file === '-' ? '未命名文章' : basename(file, '.md'))
+    if (values['prompt-only']) {
+      const req = await buildCoverPromptRequest(title, markdown, values.style, settings.persona, { hasReference: Boolean(referenceImage) })
+      return emitSuccess(io, values.json, {
+        style: req.style,
+        title: req.title,
+        promptOnly: true,
+        slots: req.slots,
+        template: req.template,
+        fragments: req.fragments,
+        personSegments: req.personSegments,
+        system: req.system,
+        user: req.user,
+      }, `${req.system}\n\n---\n\n${req.user}`)
+    }
+    const ctx = resolveCtx(io, values, secrets)
+    prompt = await coverPrompt(ctx, title, markdown, values.style, settings.persona, { hasReference: Boolean(referenceImage) })
+  }
+
+  const apiKey = provider === 'bailian'
+    ? String(io.env[ENV_BAILIAN_KEY] ?? settings.bailianKey ?? '').trim()
+    : String(io.env[ENV_ARK_KEY] ?? settings.arkKey ?? '').trim()
+  if (apiKey) secrets.push(apiKey)
+  if (!apiKey) {
+    const envName = provider === 'bailian' ? ENV_BAILIAN_KEY : ENV_ARK_KEY
+    throw new UsageError(`缺少 ${provider} 生图 API Key，请设置环境变量 ${envName} 或在工作区设置中保存。`)
+  }
+  const model = provider === 'bailian' ? settings.bailianModel : settings.arkModel
+  const generate = provider === 'bailian' ? generateBailianCover : generateArkCover
+  const rawImage = await generate(prompt, {
+    apiKey, model, resolution: values.resolution, format: values.format, referenceImage,
+  }, io.fetchImpl)
+  const id = await saveCover(dataDir, rawImage, values.format)
+  const savedPath = join(dataDir, 'covers', `${id}.${values.format}`)
+  if (values.out) {
+    const cropped = await readCover(dataDir, id, values.format)
+    await writeOutFile(values.out, cropped)
+  }
+  return emitSuccess(io, values.json, {
+    id,
+    style: values.style,
+    provider,
+    format: values.format,
+    resolution: values.resolution,
+    savedPath,
+    out: values.out ?? null,
+    prompt,
+  }, `已生成封面：${values.out ?? savedPath}`)
+}
+
+async function handleStyle(argv, io, secrets) {
+  const { action, rest } = splitSubAction(argv)
+  if (!action) {
+    const { values } = parseSubcommandArgs(rest)
+    return emitSuccess(io, values.json, { help: SUB_HELP.style }, SUB_HELP.style)
+  }
+  if (action === 'status') {
+    const { values, positionals } = parseSubcommandArgs(rest)
+    if (values.help) return emitSuccess(io, values.json, { help: SUB_HELP.style }, SUB_HELP.style)
+    assertPositionals(positionals, 0, '用法：wechat-studio style status')
+    const state = await readStyleState(resolveDataDir(values, io.env))
+    const text = state.active
+      ? `个人写作风格已启用（正文：${state.scopes.writer ? '是' : '否'}，标题：${state.scopes.headline ? '是' : '否'}）`
+      : '当前使用内置默认风格。'
+    return emitSuccess(io, values.json, state, text)
+  }
+  if (action === 'analyze') {
+    const { values, positionals } = parseSubcommandArgs(rest, {
+      ...LLM_OPTIONS,
+      note: { type: 'string', default: '' },
+      out: { type: 'string' },
+      'prompt-only': { type: 'boolean', default: false },
+    })
+    if (values.help) return emitSuccess(io, values.json, { help: SUB_HELP.style }, SUB_HELP.style)
+    if (!positionals.length) throw new UsageError('用法：wechat-studio style analyze <file1.md|-> [file2.md ...] [--note <说明>] [--out <profile.json>] [--prompt-only]')
+    const dataDir = resolveDataDir(values, io.env)
+    const settings = await readSettings(dataDir)
+    const samples = await Promise.all(positionals.map(async (file, i) => ({
+      title: file === '-' ? `stdin-${i + 1}` : basename(file, '.md'),
+      text: await readTextFile(file, '参考文章', io),
+    })))
+    if (values['prompt-only']) {
+      const { system, user, meta } = buildAnalyzePrompt(samples, { userNote: values.note, fixedLines: settings.fixedLines })
+      return emitSuccess(io, values.json, { promptOnly: true, system, user, meta }, `${system}\n\n---\n\n${user}`)
+    }
+    const ctx = resolveCtx(io, values, secrets)
+    const result = await analyzeWritingStyle(ctx, samples, { userNote: values.note, fixedLines: settings.fixedLines })
+    if (values.out) await writeOutFile(values.out, JSON.stringify(result.profile, null, 2))
+    return emitSuccess(io, values.json, { ...result, out: values.out ?? null }, values.out ? `已生成风格档案：${values.out}` : JSON.stringify(result.profile, null, 2))
+  }
+  if (action === 'preview') {
+    const { values, positionals } = parseSubcommandArgs(rest, {
+      ...LLM_OPTIONS,
+      topic: { type: 'string', default: '' },
+      'prompt-only': { type: 'boolean', default: false },
+    })
+    if (values.help) return emitSuccess(io, values.json, { help: SUB_HELP.style }, SUB_HELP.style)
+    const usage = '用法：wechat-studio style preview <profile.json|-> [--topic <选题>] [--prompt-only]'
+    assertPositionals(positionals, 1, usage)
+    const file = positionals[0]
+    if (!file) throw new UsageError(usage)
+    const rawProfile = await readJsonFile(file, '风格档案', io)
+    if (values['prompt-only']) {
+      const { topic, system, user } = buildPreviewPrompt(rawProfile, values.topic)
+      return emitSuccess(io, values.json, { promptOnly: true, topic, system, user }, `${system}\n\n---\n\n${user}`)
+    }
+    const ctx = resolveCtx(io, values, secrets)
+    const result = await previewWritingStyle(ctx, rawProfile, values.topic)
+    const human = `选题：${result.topic}\n\n${result.opening}\n\n标题候选：\n${result.titles.map((t, i) => `${i + 1}. ${t}`).join('\n')}`
+    return emitSuccess(io, values.json, result, human)
+  }
+  if (action === 'apply') {
+    const { values, positionals } = parseSubcommandArgs(rest, {
+      'no-writer': { type: 'boolean', default: false },
+      'no-headline': { type: 'boolean', default: false },
+    })
+    if (values.help) return emitSuccess(io, values.json, { help: SUB_HELP.style }, SUB_HELP.style)
+    const usage = '用法：wechat-studio style apply <profile.json|-> [--no-writer] [--no-headline]'
+    assertPositionals(positionals, 1, usage)
+    const file = positionals[0]
+    if (!file) throw new UsageError(usage)
+    const rawProfile = await readJsonFile(file, '风格档案', io)
+    const dataDir = resolveDataDir(values, io.env)
+    const result = await applyWritingStyle(dataDir, rawProfile, {
+      scopes: { writer: !values['no-writer'], headline: !values['no-headline'] },
+    })
+    return emitSuccess(io, values.json, result, `已启用个人写作风格（写入：${result.written.join('、') || '无'}）。`)
+  }
+  if (action === 'restore') {
+    const { values, positionals } = parseSubcommandArgs(rest, {
+      backup: { type: 'boolean', default: false },
+    })
+    if (values.help) return emitSuccess(io, values.json, { help: SUB_HELP.style }, SUB_HELP.style)
+    assertPositionals(positionals, 0, '用法：wechat-studio style restore [--backup]')
+    const dataDir = resolveDataDir(values, io.env)
+    const result = await restoreDefaultStyle(dataDir, { restoreBackup: values.backup })
+    return emitSuccess(io, values.json, result, values.backup ? '已从备份恢复风格文件。' : '已恢复内置默认风格。')
+  }
+  throw new UsageError(`未知的 style 子命令：${action}（支持 status、analyze、preview、apply、restore）`)
+}
+
+export async function runCli(argv = [], rawIo = {}) {
+  const io = {
+    stdin: rawIo.stdin ?? process.stdin,
+    stdout: rawIo.stdout ?? process.stdout,
+    stderr: rawIo.stderr ?? process.stderr,
+    env: rawIo.env ?? process.env,
+    fetchImpl: rawIo.fetchImpl ?? fetch,
+    ctx: rawIo.ctx ?? null,
+  }
+  const isJson = hasJsonFlag(argv)
+  const secrets = []
+  try {
+    const found = extractCommand(argv)
+    if (!found) {
+      const { values } = parseSubcommandArgs(argv)
+      if (values.version) {
+        return emitSuccess(io, values.json, { version: VERSION }, VERSION)
+      }
+      return emitSuccess(io, values.json, { version: VERSION, help: HELP_TEXT }, HELP_TEXT)
+    }
+    const { command, index } = found
+    const subArgv = [...argv.slice(0, index), ...argv.slice(index + 1)]
+    switch (command) {
+      case 'layout': return await handleLayout(subArgv, io)
+      case 'svg-card': return await handleSvgCard(subArgv, io)
+      case 'skills': return await handleSkills(subArgv, io)
+      case 'articles': return await handleArticles(subArgv, io)
+      case 'insights': return await handleInsights(subArgv, io)
+      case 'detect': return await handleDetect(subArgv, io, secrets)
+      case 'cover': return await handleCover(subArgv, io, secrets)
+      case 'style': return await handleStyle(subArgv, io, secrets)
+      default:
+        throw new UsageError(`未知命令：${command}。运行 wechat-studio --help 查看可用子命令。`)
+    }
+  } catch (err) {
+    return emitError(io, isJson, err, secrets)
+  }
+}

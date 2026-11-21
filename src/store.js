@@ -1,8 +1,9 @@
-// 本地存储：稿件按 ID 分片存放在 <DSH_HOME>/wechat-studio/articles/<id>/，索引在 index.json，桌面版和网页版共用。
+// 本地存储：稿件按 ID 分片存放在 <DSH_HOME>/wechat-studio/articles/<id>/，索引在 index.json，桌面版、网页版和独立 CLI 共用。
 import { createHash } from 'node:crypto'
-import { access, mkdir, readdir, rename, rm } from 'node:fs/promises'
+import { access, mkdir, open, readdir, rename, rm, stat, unlink } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
 import { readJsonSafe, writeJsonAtomic } from './fs-json.js'
 
 export function dshHome() {
@@ -11,46 +12,103 @@ export function dshHome() {
 
 const EMPTY = { v: 1, currentId: null, articles: [] }
 const ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/
+const LOCK_STALE_MS = 15_000
+const LOCK_TIMEOUT_MS = 10_000
 const digest = text => createHash('sha1').update(text).digest('base64')
 const exists = file => access(file).then(() => true, () => false)
+
+async function fileSig(file) {
+  try {
+    const st = await stat(file)
+    return `${st.ino}:${st.mtimeMs}:${st.size}`
+  } catch (err) {
+    if (err.code === 'ENOENT') return null
+    throw err
+  }
+}
+
+async function withFileLock(lockFile, fn) {
+  await mkdir(dirname(lockFile), { recursive: true })
+  const deadline = Date.now() + LOCK_TIMEOUT_MS
+  let handle = null
+  while (!handle) {
+    try {
+      handle = await open(lockFile, 'wx', 0o600)
+      await handle.writeFile(JSON.stringify({ pid: process.pid, at: Date.now() }))
+    } catch (err) {
+      if (err.code !== 'EEXIST') throw err
+      const st = await stat(lockFile).catch(() => null)
+      if (st && Date.now() - st.mtimeMs > LOCK_STALE_MS) {
+        await unlink(lockFile).catch(() => {})
+        continue
+      }
+      if (Date.now() >= deadline) {
+        throw Object.assign(new Error('等待工作区写入锁超时，请稍后重试。'), { status: 409 })
+      }
+      await delay(15 + Math.floor(Math.random() * 25))
+    }
+  }
+  try {
+    return await fn()
+  } finally {
+    await handle.close().catch(() => {})
+    await unlink(lockFile).catch(() => {})
+  }
+}
 
 export class JsonStore {
   constructor(root, { file, empty }) {
     this.root = root
     this.file = join(root, file)
+    this.lockFile = `${this.file}.lock`
     this.empty = empty
     this.queue = Promise.resolve()
     this.cache = null
+    this.diskSig = undefined
+    this.writing = 0
     this.loading = null
     this.problems = []
   }
 
-  read() {
-    if (this.cache) return Promise.resolve(this.cache)
+  async read({ bypassWriting = false } = {}) {
+    if (this.loading) return this.loading
+    if (this.cache) {
+      if (!bypassWriting && this.writing > 0) return this.cache
+      const sig = await fileSig(this.file)
+      if (sig === this.diskSig) return this.cache
+    }
     this.loading ??= this.load().finally(() => { this.loading = null })
     return this.loading
   }
 
   async load() {
+    const sig = await fileSig(this.file)
     const { status, value } = await readJsonSafe(this.file)
     if (status === 'corrupt') this.problems.push({ file: this.file, message: `${this.file} 已损坏，已改名保留` })
     else if (status === 'backup') this.problems.push({ file: this.file, message: `${this.file} 主文件已损坏，已回退到上一版备份` })
     this.cache = { ...structuredClone(this.empty), ...(value ?? {}) }
+    this.diskSig = sig
     return this.cache
   }
 
   /**
-   * 串行修改状态并落盘。fn 可以直接改传入的 state。
+   * 跨进程加锁后重读磁盘最新状态再修改落盘，防止多进程并发写入相互覆盖。
    * @param {(state: object) => any} fn - 修改函数，返回值原样返回。
    */
   update(fn) {
-    const run = async () => {
-      const state = await this.read()
-      const result = await fn(state)
-      await mkdir(this.root, { recursive: true })
-      await writeJsonAtomic(this.file, state)
-      return result
-    }
+    const run = async () => withFileLock(this.lockFile, async () => {
+      this.writing += 1
+      try {
+        const state = await this.read({ bypassWriting: true })
+        const result = await fn(state)
+        await mkdir(this.root, { recursive: true })
+        await writeJsonAtomic(this.file, state)
+        this.diskSig = await fileSig(this.file)
+        return result
+      } finally {
+        this.writing -= 1
+      }
+    })
     const next = this.queue.then(run, run)
     this.queue = next.catch(() => {})
     return next
@@ -62,18 +120,26 @@ export class Store {
     this.root = root
     this.dir = join(root, 'articles')
     this.indexFile = join(root, 'index.json')
+    this.lockFile = join(root, '.store.lock')
     this.legacyFile = join(root, 'state.json')
     this.empty = empty
     this.queue = Promise.resolve()
     this.cache = null
+    this.indexSig = undefined
+    this.writing = 0
     this.loading = null
     this.problems = []
     this.written = new Map() // id -> { articleHash, historyHash }
     this.writtenIndex = null
   }
 
-  read() {
-    if (this.cache) return Promise.resolve(this.cache)
+  async read({ bypassWriting = false } = {}) {
+    if (this.loading) return this.loading
+    if (this.cache) {
+      if (!bypassWriting && this.writing > 0) return this.cache
+      const sig = await fileSig(this.indexFile)
+      if (sig === this.indexSig) return this.cache
+    }
     this.loading ??= this.load().finally(() => { this.loading = null })
     return this.loading
   }
@@ -159,6 +225,7 @@ export class Store {
       await writeJsonAtomic(this.indexFile, cleanIndex)
     }
     this.writtenIndex = digest(JSON.stringify(cleanIndex))
+    this.indexSig = await fileSig(this.indexFile)
     return this.cache
   }
 
@@ -185,6 +252,7 @@ export class Store {
     }
     await mkdir(this.dir, { recursive: true })
     const alive = new Set()
+    let articlesChanged = false
     for (const article of state.articles) {
       alive.add(article.id)
       const next = this.hashes(article)
@@ -192,8 +260,14 @@ export class Store {
       if (prev?.articleHash === next.articleHash && prev?.historyHash === next.historyHash) continue
       const base = join(this.dir, article.id)
       await mkdir(base, { recursive: true })
-      if (prev?.articleHash !== next.articleHash) await writeJsonAtomic(join(base, 'article.json'), next.body)
-      if (prev?.historyHash !== next.historyHash) await writeJsonAtomic(join(base, 'history.json'), next.history)
+      if (prev?.articleHash !== next.articleHash) {
+        await writeJsonAtomic(join(base, 'article.json'), next.body)
+        articlesChanged = true
+      }
+      if (prev?.historyHash !== next.historyHash) {
+        await writeJsonAtomic(join(base, 'history.json'), next.history)
+        articlesChanged = true
+      }
       this.written.set(article.id, { articleHash: next.articleHash, historyHash: next.historyHash })
     }
     // 只删本进程加载或写过、现在已不在列表里的稿件；被隔离的坏稿件从未进入 written，不会被删。
@@ -210,23 +284,30 @@ export class Store {
     }
     const index = this.indexOf(state)
     const indexHash = digest(JSON.stringify(index))
-    if (indexHash !== this.writtenIndex) {
+    // 任意稿件内容变更都原子重写 index.json，使 inode 变化以通知其他 Store 实例刷新缓存。
+    if (indexHash !== this.writtenIndex || articlesChanged) {
       await writeJsonAtomic(this.indexFile, index)
       this.writtenIndex = indexHash
     }
+    this.indexSig = await fileSig(this.indexFile)
   }
 
   /**
-   * 串行修改状态并落盘。fn 可以直接改传入的 state。
+   * 跨进程加锁后检查外部变更并串行修改落盘。fn 可以直接改传入的 state。
    * @param {(state: object) => any} fn - 修改函数，返回值原样返回。
    */
   update(fn) {
-    const run = async () => {
-      const state = await this.read()
-      const result = await fn(state)
-      await this.persist(state)
-      return result
-    }
+    const run = async () => withFileLock(this.lockFile, async () => {
+      this.writing += 1
+      try {
+        const state = await this.read({ bypassWriting: true })
+        const result = await fn(state)
+        await this.persist(state)
+        return result
+      } finally {
+        this.writing -= 1
+      }
+    })
     const next = this.queue.then(run, run)
     this.queue = next.catch(() => {})
     return next

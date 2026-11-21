@@ -14,7 +14,7 @@ export const findBlocked = (terms, text) => {
   return terms.find(term => normalized.includes(term))
 }
 
-export async function coverPrompt(ctx, title, markdown, style = 'classic', persona = {}, { hasReference = false } = {}) {
+export async function buildCoverPromptRequest(title, markdown, style = 'classic', persona = {}, { hasReference = false } = {}) {
   const templateName = style === 'classic' ? 'prompt_template.md' : `prompt_template_${style}.md`
   const [skill, template, terms] = await Promise.all([read('SKILL.md'), read(`references/${templateName}`), loadCoverBlocklist()])
   const body = template.match(/^\x60{3}[^\n]*\n([\s\S]*?)^\x60{3}[ \t]*$/m)?.[1]?.trim()
@@ -32,6 +32,11 @@ export async function coverPrompt(ctx, title, markdown, style = 'classic', perso
     terms.join(', '),
   ].join('\n\n')
   const user = JSON.stringify({ style, title, markdown: markdown.slice(0, 16000), slots })
+  return { style, title, system, user, slots, template: body, terms, fragments, personSegments: PERSON_SEGMENTS }
+}
+
+export async function coverPrompt(ctx, title, markdown, style = 'classic', persona = {}, { hasReference = false } = {}) {
+  const { system, user, slots, template: body, terms, fragments } = await buildCoverPromptRequest(title, markdown, style, persona, { hasReference })
   let issue
   for (let attempt = 0; attempt < 2; attempt++) {
     const output = extractJson(await callModel(ctx, {

@@ -435,9 +435,9 @@ const ANALYZE_SYSTEM = `你是一位资深的中文公众号编辑，擅长从�
 }`
 
 /**
- * 分析用户提供的参考文章，提炼结构化的个人写作风格档案。
+ * 构建个人风格分析提示词（供服务端与 CLI --prompt-only 复用）。
  */
-export async function analyzeWritingStyle(ctx, samples, { userNote = '', fixedLines = [], signal } = {}) {
+export function buildAnalyzePrompt(samples, { userNote = '', fixedLines = [] } = {}) {
   const bundle = buildSampleBundle(samples, { fixedLines })
   const noteLine = String(userNote ?? '').trim()
   const user = [
@@ -448,19 +448,11 @@ export async function analyzeWritingStyle(ctx, samples, { userNote = '', fixedLi
     '',
     '请严格按要求只输出 JSON 对象。',
   ].join('\n')
-
-  const rawText = await callModel(ctx, { system: ANALYZE_SYSTEM, user, task: 'style-analyze', maxTokens: 3000, signal })
-  const parsed = extractJson(rawText)
-  const hasSummary = typeof parsed?.summary === 'string' && parsed.summary.trim().length > 0
-  const hasVoice = Array.isArray(parsed?.voice) && parsed.voice.some(item => typeof item === 'string' && item.trim())
-  if (!parsed || typeof parsed !== 'object' || (!hasSummary && !hasVoice)) {
-    throw Object.assign(new Error('模型没有返回可用的风格分析结果，请重试。'), { status: 502 })
-  }
-
-  const merged = noteLine ? { ...parsed, userNote: noteLine } : parsed
-  const profile = normalizeStyleProfile(merged, bundle.items)
   return {
-    profile,
+    system: ANALYZE_SYSTEM,
+    user,
+    bundle,
+    noteLine,
     meta: {
       sampleCount: bundle.items.length,
       totalChars: bundle.totalChars,
@@ -471,9 +463,28 @@ export async function analyzeWritingStyle(ctx, samples, { userNote = '', fixedLi
 }
 
 /**
- * 现场试写：按当前风格档案针对指定选题试写一段 120-180 字的开头和 3 个标题。
+ * 分析用户提供的参考文章，提炼结构化的个人写作风格档案。
  */
-export async function previewWritingStyle(ctx, rawProfile, rawTopic = '', { signal } = {}) {
+export async function analyzeWritingStyle(ctx, samples, { userNote = '', fixedLines = [], signal } = {}) {
+  const { system, user, bundle, noteLine, meta } = buildAnalyzePrompt(samples, { userNote, fixedLines })
+
+  const rawText = await callModel(ctx, { system, user, task: 'style-analyze', maxTokens: 3000, signal })
+  const parsed = extractJson(rawText)
+  const hasSummary = typeof parsed?.summary === 'string' && parsed.summary.trim().length > 0
+  const hasVoice = Array.isArray(parsed?.voice) && parsed.voice.some(item => typeof item === 'string' && item.trim())
+  if (!parsed || typeof parsed !== 'object' || (!hasSummary && !hasVoice)) {
+    throw Object.assign(new Error('模型没有返回可用的风格分析结果，请重试。'), { status: 502 })
+  }
+
+  const merged = noteLine ? { ...parsed, userNote: noteLine } : parsed
+  const profile = normalizeStyleProfile(merged, bundle.items)
+  return { profile, meta }
+}
+
+/**
+ * 构建个人风格试写提示词（供服务端与 CLI --prompt-only 复用）。
+ */
+export function buildPreviewPrompt(rawProfile, rawTopic = '') {
   const profile = normalizeStyleProfile(rawProfile)
   const topic = String(rawTopic ?? '').trim().slice(0, 120) || DEFAULT_PREVIEW_TOPIC
   const system = [
@@ -487,8 +498,15 @@ export async function previewWritingStyle(ctx, rawProfile, rawTopic = '', { sign
     '=== 个人标题风格 ===',
     renderHeadlineSkill(profile),
   ].join('\n')
-
   const user = `请围绕选题「${topic}」，按这套风格试写一段开头和 3 个标题。只输出 JSON。`
+  return { profile, topic, system, user }
+}
+
+/**
+ * 现场试写：按当前风格档案针对指定选题试写一段 120-180 字的开头和 3 个标题。
+ */
+export async function previewWritingStyle(ctx, rawProfile, rawTopic = '', { signal } = {}) {
+  const { topic, system, user } = buildPreviewPrompt(rawProfile, rawTopic)
   const rawText = await callModel(ctx, { system, user, task: 'style-preview', maxTokens: 1500, signal })
   const parsed = extractJson(rawText)
   const opening = typeof parsed?.opening === 'string' ? parsed.opening.replace(/\r\n?/g, '\n').trim().slice(0, 600) : ''

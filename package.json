@@ -4,6 +4,9 @@
   "description": "DeepSeek Harness 插件「公众号成稿台」：写稿、按段改稿、朱雀报告质检、公众号排版预览和一键复制。",
   "type": "module",
   "main": "src/host.js",
+  "bin": {
+    "wechat-studio": "./bin/wechat-studio.js"
+  },
   "exports": {
     ".": "./src/host.js",
     "./client": "./dist/client.js",
@@ -55,6 +58,7 @@
     "unpdf": "^1.4.0"
   },
   "files": [
+    "bin",
     "src",
     "dist",
     "skills",
