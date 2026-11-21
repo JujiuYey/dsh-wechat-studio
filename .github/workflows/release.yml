@@ -1,0 +1,112 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Verify Node ${{ matrix.node }} / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        node: ['20', '22']
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - name: Check tag version, lockfile and source hygiene
+        run: |
+          npm run check:package
+          git show --format= --check HEAD
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+      - name: Pack and smoke test
+        run: |
+          mkdir -p artifacts
+          npm pack --pack-destination artifacts
+          npm run smoke:package
+      - name: Keep the verified release tarball
+        if: matrix.os == 'ubuntu-latest' && matrix.node == '22'
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-package
+          path: artifacts/*.tgz
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      # Node 24 ships an npm version compatible with Trusted Publishing.
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          registry-url: https://registry.npmjs.org
+      - uses: actions/download-artifact@v4
+        with:
+          name: npm-package
+          path: artifacts
+      # npm authenticates through GitHub OIDC; no npm token secret is needed.
+      - name: Publish the verified tarball
+        shell: bash
+        run: |
+          packages=(artifacts/*.tgz)
+          [[ ${#packages[@]} -eq 1 && -f "${packages[0]}" ]]
+          version=$(node -p 'JSON.parse(require("node:fs").readFileSync("package.json", "utf8")).version')
+          # Allow reruns to recover a failed GitHub Release after npm succeeded.
+          if npm view "dsh-wechat-studio@$version" version --json > published-version.json 2> npm-view-error.log; then
+            node --input-type=module -e 'import fs from "node:fs"; import assert from "node:assert/strict"; assert.equal(JSON.parse(fs.readFileSync("published-version.json")), JSON.parse(fs.readFileSync("package.json")).version)'
+            # An existing version must contain exactly the tarball we verified.
+            remote=$(npm view "dsh-wechat-studio@$version" dist.integrity)
+            local=$(node --input-type=module -e 'import fs from "node:fs"; import crypto from "node:crypto"; console.log("sha512-" + crypto.createHash("sha512").update(fs.readFileSync(process.argv[1])).digest("base64"))' "${packages[0]}")
+            [[ "$remote" == "$local" ]]
+          elif grep -q 'E404' npm-view-error.log; then
+            if [[ "$version" == *-* ]]; then
+              npm publish "${packages[0]}" --provenance --access public --tag next
+            else
+              npm publish "${packages[0]}" --provenance --access public
+            fi
+          else
+            cat npm-view-error.log >&2
+            exit 1
+          fi
+      - name: Create GitHub Release and attach the same tarball
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" artifacts/*.tgz --clobber
+          else
+            args=()
+            [[ "$RELEASE_TAG" != *-* ]] || args+=(--prerelease)
+            gh release create "$RELEASE_TAG" artifacts/*.tgz --verify-tag --generate-notes "${args[@]}"
+          fi

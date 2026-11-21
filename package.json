@@ -46,8 +46,10 @@
     "build": "node scripts/build.mjs",
     "watch": "node scripts/build.mjs --watch",
     "dev": "node scripts/dev.mjs",
-    "test": "node --test test/*.test.js",
-    "prepack": "npm run build"
+    "test": "node scripts/test.mjs",
+    "prepack": "npm run build",
+    "check:package": "node scripts/check-package.mjs",
+    "smoke:package": "node scripts/smoke-package.mjs"
   },
   "devDependencies": {
     "esbuild": "^0.25.10",

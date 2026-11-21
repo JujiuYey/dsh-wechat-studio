@@ -372,6 +372,10 @@ npm pack         # 构建并打包可安装的 tgz
 
 Host 接口通过宿主鉴权。页面只读取凭证是否已配置，密钥由 Host 使用。模型返回的改稿操作经过白名单和段号校验。
 
+### GitHub Actions 与发版
+
+日常质检与标签发版由 GitHub Actions 自动执行。工作流说明、npm 发布配置及发版步骤见 [维护与发版指南](.github/RELEASING.md)。
+
 ## 许可证与致谢
 
 本项目是社区插件，采用 [MIT 许可证](LICENSE)。
