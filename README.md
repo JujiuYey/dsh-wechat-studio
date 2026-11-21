@@ -7,6 +7,7 @@
     <a href="#从-markdown-到复盘">工作流</a> ·
     <a href="#快速开始">快速安装</a> ·
     <a href="#走进工作台">功能导览</a> ·
+    <a href="#cli-与外部-agent">CLI 与 Agent</a> ·
     <a href="#深入使用">配置与数据</a> ·
     <a href="#开发">开发</a>
   </p>
@@ -185,6 +186,62 @@ dsh plugin --profile desktop remove dsh-wechat-studio
 
 直接导入微信公众号后台的 XLS，查看账号趋势、用户增长、单篇明细和流量来源。按题材和标题套路比较文章表现，记录下一次要试什么；数据提炼出的写作规则，确认后可以保存为 Skill。
 
+## CLI 与外部 Agent
+
+**不装 DeepSeek Harness 也能用。** 在完整保留 DSH 插件能力的同时，本仓库提供独立零依赖 CLI `wechat-studio`（需要 Node.js 20+），可供 Claude Code、WorkBuddy、Cursor、Codex 等外部 Agent 或自动化脚本直接调用。
+
+默认与 DSH 插件实时共享 `~/.dsh/wechat-studio/` 数据目录（支持跨进程锁与外部变更检测），也可用 `--data-dir <path>` 隔离运行。
+
+### 在外部 Agent 里直接用（说人话版）
+
+不用自己敲命令，直接把下面这句话发给你的 Agent（Claude Code / WorkBuddy / Cursor / Codex 等）：
+
+> 帮我全局安装 `dsh-wechat-studio`（`npm install -g dsh-wechat-studio`），跑一下 `wechat-studio --version` 确认装好，再读一遍 `wechat-studio --help` 和 `wechat-studio skills --json`；以后我让你排公众号、做 SVG 动画卡、管个人写作风格或推草稿箱，都直接用 `wechat-studio`（加 `--json`）。
+
+装好以后，不用记任何命令或参数，直接按正常说话提需求就行（Agent 会自己挑对应的子命令去执行）。
+
+**第一次装好，直接让它一条龙试跑：**
+
+> 帮我用公众号成稿台完整跑一遍成稿流程：先按当前生效的写作风格，写一篇 300 字以内的公众号短文（带标题和小节），顺手存进稿件库；再给它配一张大字海报风格的开头横幅，用质感风 + 松柏金排版并加上文末关注卡，导出成 `preview.html`；最后把文里的核心步骤做成一张 3 步流程 SVG 动画卡导出成 `card.html`，跑完把两个文件发我预览。
+
+**日常单点用法：**
+
+- **排版 + 开头横幅 + 关注卡**：「把这篇 `article.md` 排成公众号文章，用质感风配松柏金，开头配一张横幅，文末加上关注卡，导出给我预览。」
+- **加一张 SVG 动画卡**：「把我刚才写的三步流程做成一张公众号动画卡，导出给我看看效果。」
+- **记住我的作者名和排版偏好**：「以后帮我排版默认用质感风 + 松柏金，作者名写『xxx』，文末标语写『xxx』，帮我保存成默认配置。」
+- **一键推到公众号草稿箱**：「先帮我测一下公众号凭证通不通，通了就把这篇 `article.md` 连同 `cover.png` 直接推到草稿箱。」
+- **提取个人写作风格**：「读一下我这三篇历史文章，总结出我的写作风格，以后写公众号都按这个风格来。」
+
+如果 Agent 支持导入 Skills，也可以直接把 [skills/cli-agent/SKILL.md](skills/cli-agent/SKILL.md) 放进它的 Skills 目录。
+
+### 命令行安装与运行（开发者 / 脚本）
+
+```bash
+# 免安装直接运行
+npx dsh-wechat-studio --help
+
+# 或全局安装 / 本地源码链接
+npm install -g dsh-wechat-studio
+# 本地开发目录：npm link
+```
+
+### 常用子命令
+
+所有子命令均支持 `--json`（stdout 输出严格单行 JSON）、`<command> --help` 自发现参数，以及 `-` 从标准输入管道读取正文。
+
+| 子命令 | 作用 | 常用示例 |
+| --- | --- | --- |
+| `skills` | 查看当前生效的技能路径（个人覆盖或内置） | `wechat-studio skills --json` |
+| `layout` | 将 Markdown 排成公众号 HTML（支持横幅与关注卡） | `wechat-studio layout article.md --style neo --theme forest --banner banner.json --follow-card --out preview.html --json` |
+| `svg-card` | 渲染单张公众号 SMIL 动画 SVG 卡片 | `wechat-studio svg-card svg-steps --title "写作流程" --line "收集素材" --line "起草改稿" --out card.html --json` |
+| `detect` | 调用朱雀文本检测并定位标红段落 | `wechat-studio detect article.md --json` |
+| `cover` | 生成 2.35:1 封面（支持 `--prompt-only` / `--prompt-file` 零模型 Key 闭环） | `wechat-studio cover article.md --style felt --out cover.png --json` |
+| `draft` | 校验公众号凭证并直接推送排版稿件到草稿箱（`verify` / `push`） | `wechat-studio draft push article.md --style neo --theme forest --cover cover.png --json` |
+| `settings` | 查看或更新工作区配置（作者/标语/默认排版/服务凭证） | `wechat-studio settings set --author "你的名字" --slogan "一句话标语" --json` |
+| `style` | 管理个人写作风格（`status` / `analyze` / `preview` / `apply` / `restore`） | `wechat-studio style analyze sample1.md --prompt-only --json` |
+| `articles` | 管理共享稿件库（`list` / `get` / `import`） | `cat article.md \| wechat-studio articles import - --json` |
+| `insights` | 导入公众号后台 XLS 并汇总复盘指标 | `wechat-studio insights summary --range 30 --json` |
+
 ## 深入使用
 
 <details>
@@ -276,46 +333,6 @@ an OVERSIZED, RELAXED-FIT heavyweight waffle-knit short-sleeve polo shirt in Mid
 风格列表按文件变化缓存，单个文件不可读时跳过并在配图页提示，不影响其他功能。生成对话框以画廊显示原 skill 仓库的成品预览，预览图缩至 640px 宽并以内联 WebP 打包；扩展风格没有内置预览时显示名称和回退卡片。
 
 [SVG 动画卡技能](skills/wechat-svg-cards/SKILL.md)包含八种卡型的内容约束和示例，渲染脚本内置在插件中。动画使用 SMIL，不执行卡片中的脚本或加载外部资源。卡片以 Markdown 保存，可原位播放、收起、重播或单独复制；复制结果保留 SMIL 动画。发布前请先在公众号测试草稿粘贴单卡和整篇，确认所用客户端保留动画、顺序和配色。
-
-</details>
-
-<details>
-<summary><strong>作为 CLI 供其他 Agent 调用（不依赖 DSH 宿主）</strong></summary>
-
-在保留全部 DeepSeek Harness 插件能力的同时，仓库也提供独立命令行入口 `wechat-studio`（`bin/wechat-studio.js`），可供 Claude Code、Codex、Cursor 等外部 Agent 或自动化脚本直接调用。默认与插件共用 `~/.dsh/wechat-studio/` 数据目录，也可用 `--data-dir <path>` 隔离运行。
-
-```bash
-# 直接运行（或 npm link 后全局使用 wechat-studio）
-npx dsh-wechat-studio --help
-
-# Markdown 排成公众号 HTML（--json 保证 stdout 输出单行结构化 JSON；可选 --banner <spec.json> 与 --follow-card）
-wechat-studio layout article.md --style neo --theme forest --out preview.html --json
-
-# 渲染单张公众号 SMIL 动画 SVG 卡片
-wechat-studio svg-card svg-steps --title "写作流程" --line "收集素材" --line "起草改稿" --out card.html --json
-
-# 稿件库与复盘数据（与 DSH 插件实时共享）
-wechat-studio articles import article.md --json
-wechat-studio articles list --json
-wechat-studio insights import export.xls --json
-wechat-studio insights summary --range 30 --json
-
-# 查看当前生效的技能文件路径（内置或个人写作风格覆盖）
-wechat-studio skills --json
-
-# 朱雀检测与封面生成（封面支持 --prompt-only / --prompt-file 零模型 Key 闭环）
-wechat-studio detect article.md --json
-wechat-studio cover article.md --style felt --out cover.png --json
-wechat-studio cover --prompt-file final-prompt.txt --style felt --out cover.png --json
-
-# 个人写作风格（外部 Agent 可加 --prompt-only 免额外模型密钥）
-wechat-studio style status --json
-wechat-studio style analyze sample1.md sample2.md --prompt-only --json
-wechat-studio style apply profile.json --json
-wechat-studio style restore --json
-```
-
-给外部 Agent 配套的技能说明位于 [skills/cli-agent/SKILL.md](skills/cli-agent/SKILL.md)。
 
 </details>
 

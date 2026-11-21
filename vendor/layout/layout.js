@@ -1701,3 +1701,70 @@ export function renderSvgCard(kind, title, lines, { style = 'std', theme = 'oran
   const html = svgCardHtml(kind, title, lines, T)
   return { html, warnings: [...WARN] }
 }
+
+/**
+ * 渲染可直接推送到微信公众号草稿箱的 HTML 片段（与预览页「复制全文 / 推送草稿箱」一致）。
+ */
+export function renderFragment(source, { banner: bannerSpec, style: argStyle, theme: argTheme, outro, brandAuthor, brandSlogan, avatarUrl = '', name = 'article.md' } = {}) {
+  WARN = []
+  if (!Object.hasOwn(STYLES, argStyle)) argStyle = undefined
+  if (!Object.hasOwn(THEMES, argTheme)) argTheme = undefined
+  let [meta, md] = frontMatter(cleanMd(source))
+  const brand = {}
+  if (brandAuthor) brand.author = brandAuthor
+  if (brandSlogan) brand.slogan = brandSlogan
+  Object.assign(meta, brand)
+  if (outro !== undefined && outro !== null) meta.outro = outro
+  const m = re(String.raw`^#\s+(.+)$`, 'm').search(md)
+  const base = name.split(/[\\/]/).pop()
+  const dot = base.lastIndexOf('.')
+  const title = get(meta, 'title') || (m ? strip(m[1]) : dot > 0 ? base.slice(0, dot) : base)
+  let style = argStyle || get(meta, 'style', 'std'), theme = argTheme || get(meta, 'theme', 'orange')
+  if (!Object.hasOwn(STYLES, style)) style = 'std'
+  if (!Object.hasOwn(THEMES, theme)) theme = 'orange'
+  const stat = {}
+  let body = fixEmpty(render(md, { ...TOK, st: style, r: STYLES[style].r }, Object.assign(Object.create(null), meta), stat))
+  if (style === 'dark') body = darkFix(body)
+  const pal = THEMES[theme]
+  for (const [k, tok] of Object.entries(TOK)) body = body.split(tok).join(pal[k])
+  let bannerHtml = ''
+  if (bannerSpec) {
+    const spec = jsonCopy(bannerSpec)
+    if (Object.keys(brand).length) spec.brand = brand
+    const key = get(spec, 'style') === 'card' ? 'card' : 'poster'
+    const bBody = get(spec, key, {})
+    if (['card', 'poster', 'neo'].includes(get(spec, 'style')) && get(bBody, 'theme', 'all') === 'all') {
+      const themes = { ...B.THEMES }
+      for (const [k, T] of Object.entries(THEMES)) themes[k] = { main: T.main, light: T.tint, line: T.line, border: T.tint, bg: T.soft }
+      const sp = jsonCopy(spec)
+      if (style === 'neo' && sp.style === 'poster') sp.style = 'neo'
+      sp[key].theme = theme
+      bannerHtml = B.build(sp, themes)
+    } else {
+      bannerHtml = B.build(spec)
+    }
+  }
+  const chRaw = Array.from(String(get(meta, 'author', AUTHOR) || AUTHOR).trim())[0] || '文'
+  const avatarInitial = /^[a-z]$/.test(chRaw) ? chRaw.toUpperCase() : chRaw
+  const badgeHtml = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 72 72" width="72" height="72" style="display:block;width:72px;height:72px;"><rect width="72" height="72" rx="36" fill="${pal.main}"/><text x="36" y="47" font-size="30" font-weight="800" fill="#FFFFFF" text-anchor="middle" font-family="'PingFang SC','Helvetica Neue',sans-serif">${esc(avatarInitial)}</text></svg>`
+  const badgeSvg = (x, y, w, h) => {
+    const nw = Number(w), nh = Number(h), cx = Math.round(Number(x) + nw / 2)
+    const aligned = nw === 84 && nh === 80
+    const cy = aligned ? Math.round(Number(y) + 44) : Math.round(Number(y) + nh / 2)
+    const r = aligned ? 34 : Math.round(Math.min(nw, nh) * 0.38)
+    const fs = Math.round(r * 0.92)
+    return `<g><circle cx="${cx}" cy="${cy}" r="${r}" fill="${pal.main}"/><text x="${cx}" y="${Math.round(cy + fs * 0.35)}" font-size="${fs}" font-weight="800" fill="#FFFFFF" text-anchor="middle" font-family="'PingFang SC','Helvetica Neue',sans-serif">${esc(avatarInitial)}</text></g>`
+  }
+  const fillAvatar = (h, u) => {
+    if (u) return h.split('GIF_URL_HERE').join(esc(u))
+    return h
+      .replace(/<img\s+src="GIF_URL_HERE"[^>]*\/>/g, () => badgeHtml)
+      .replace(/<image\s+x="([^"]+)"\s+y="([^"]+)"\s+width="([^"]+)"\s+height="([^"]+)"[^>]*href="GIF_URL_HERE"\s*\/>/g, (_, x, y, w, h_) => badgeSvg(x, y, w, h_))
+  }
+  const u = String(avatarUrl || '').trim()
+  const finalBanner = fillAvatar(bannerHtml, u)
+  const finalBody = fillAvatar(body, u)
+  const html = (finalBanner ? `<section style="margin:0 0 24px">${finalBanner}</section>` : '') + finalBody
+  const issues = check(md, body, bannerHtml, stat)
+  return { title, style, theme, html, issues }
+}

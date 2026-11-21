@@ -11,9 +11,10 @@ import { buildCoverPromptRequest } from './cover-prompt.js'
 import { COVER_STYLES } from './cover-styles.js'
 import { coverPrompt, generateArkCover, generateBailianCover, readCover, saveCover } from './cover.js'
 import { buildInsights, importData, INSIGHTS_EMPTY } from './insights.js'
-import { checkBanner, detectionText, renderLayout, renderSvgCard, resolveLayoutPreferences, STYLES, SVG_CARD_KINDS, THEMES } from './layout.js'
-import { readSettings } from './settings.js'
+import { checkBanner, detectionText, renderLayout, renderSvgCard, renderWechatHtml, resolveLayoutPreferences, STYLES, SVG_CARD_KINDS, THEMES } from './layout.js'
+import { publicSettings, readSettings, updateSettings } from './settings.js'
 import { dshHome, JsonStore, Store } from './store.js'
+import { pushWechatDraft, verifyCredentials } from './wechat.js'
 import { analyzeWritingStyle, applyWritingStyle, buildAnalyzePrompt, buildPreviewPrompt, previewWritingStyle, readStyleState, restoreDefaultStyle } from './writing-style.js'
 import { DEFAULT_ENDPOINT, detect, mapSegments } from './zhuque.js'
 
@@ -22,6 +23,8 @@ const { version: VERSION } = JSON.parse(await readFile(new URL('../package.json'
 const ENV_ZHUQUE_KEY = ['ZHUQUE', 'API', 'KEY'].join('_')
 const ENV_ARK_KEY = ['ARK', 'API', 'KEY'].join('_')
 const ENV_BAILIAN_KEY = ['BAILIAN', 'API', 'KEY'].join('_')
+const ENV_WECHAT_APP_ID = ['WECHAT', 'APP', 'ID'].join('_')
+const ENV_WECHAT_APP_SECRET = ['WECHAT', 'APP', 'SECRET'].join('_')
 
 class UsageError extends Error {
   constructor(message) {
@@ -47,6 +50,10 @@ const VALUE_FLAGS = new Set([
   '--data-dir', '--style', '--theme', '--banner', '--out', '--title', '--line', '--lines-file',
   '--range', '--key', '--endpoint', '--resolution', '--format', '--provider',
   '--prompt-file', '--note', '--topic', '--model', '--base-url',
+  '--author', '--slogan', '--cover-provider', '--ark-model', '--bailian-model', '--portrait-url',
+  '--zhuque-key', '--zhuque-endpoint', '--ark-key', '--bailian-key',
+  '--mp-name', '--mp-app-id', '--mp-app-secret', '--from-json',
+  '--app-id', '--app-secret', '--cover', '--avatar',
 ])
 
 const HELP_TEXT = `wechat-studio v${VERSION} — 微信公众号成稿台 CLI（兼容 DeepSeek Harness 插件工作区）
@@ -59,6 +66,8 @@ const HELP_TEXT = `wechat-studio v${VERSION} — 微信公众号成稿台 CLI（
   svg-card <kind>                渲染单张公众号 SMIL 动画 SVG 卡片
   detect <file.md|->             调用朱雀文本检测并定位标红段落
   cover [file.md|-]              生成 2.35:1 公众号封面（支持 --prompt-only / --prompt-file）
+  draft <push|verify>            校验公众号凭证或将排版后的文章推送到草稿箱
+  settings <get|set>             查看或更新工作区配置（作者/标语/默认排版/凭证）
   skills                         查看当前工作区生效的技能文件路径（内置或个人覆盖）
   articles <list|get|import>     管理工作区稿件（与 DSH 插件实时共享）
   insights <import|summary>      导入公众号后台数据或输出复盘指标
@@ -142,6 +151,41 @@ const SUB_HELP = {
   preview <profile.json|-> [--topic <t>] [--prompt-only]     按风格档案现场试写
   apply <profile.json|-> [--no-writer] [--no-headline]       启用个人风格并写入 skills/
   restore [--backup]                                         恢复内置默认风格（或恢复 .bak 备份）`,
+
+  settings: `用法: wechat-studio settings <get|set> [options]
+子命令:
+  get                                  查看当前工作区公开配置（不含明文密钥）
+  set [options]                        更新工作区配置（自动以 600 权限写入 settings.json）
+常用 set 选项:
+  --author <name>                      作者名（用于文末关注卡与草稿箱作者）
+  --slogan <text>                      文末关注卡标语
+  --style <id>                         默认正文风格（${STYLES.join(', ')}）
+  --theme <id>                         默认配色主题（${THEMES.join(', ')}）
+  --cover-provider <ark|bailian>       默认封面生图提供方
+  --ark-model <id> / --bailian-model <id>
+                                       默认封面生图模型
+  --portrait-url <https://...|"">      封面人物参考图地址（传空字符串清除）
+  --zhuque-key / --ark-key / --bailian-key <key>
+                                       保存对应服务密钥（传空字符串清除）
+  --mp-name / --mp-app-id / --mp-app-secret <val>
+                                       保存公众号名称、AppID、AppSecret
+  --from-json <file|->                 从 JSON 文件或 stdin 批量读取配置补丁（适合传密钥）`,
+
+  draft: `用法: wechat-studio draft <push|verify> [options]
+子命令:
+  verify [--app-id <id>] [--app-secret <secret>]
+                                       校验公众号凭证与 IP 白名单
+  push <file.md|-> [options]           将 Markdown 排版后推送到公众号草稿箱
+push 选项:
+  --title <text>                       覆盖草稿标题（默认取 Markdown 一级标题，上限 32 字）
+  --author <text>                      覆盖草稿作者（默认取 settings.brand.author）
+  --style <id> / --theme <id>          正文风格与配色主题
+  --banner <spec.json>                 开头横幅规格 JSON 文件
+  --follow-card                        包含文末关注卡
+  --avatar <https://...>               关注卡/横幅头像地址（留空使用首字徽章）
+  --cover <file.png|jpg>               本地封面图（留空自动上传纯色占位图并提示）
+  --app-id <id> / --app-secret <sec>   临时覆盖公众号凭证（也支持环境变量 WECHAT_APP_ID / WECHAT_APP_SECRET）
+  --dry-run                            仅在本地完成排版与自查，不调用微信接口`,
 }
 
 function scrubSecrets(text, secrets = []) {
@@ -734,6 +778,258 @@ async function handleStyle(argv, io, secrets) {
   throw new UsageError(`未知的 style 子命令：${action}（支持 status、analyze、preview、apply、restore）`)
 }
 
+function collectPatchSecrets(patch, secrets) {
+  for (const v of [patch.zhuqueKey, patch.arkKey, patch.bailianKey, patch.cloudinary?.apiSecret, patch.mp?.appSecret]) {
+    if (typeof v === 'string' && v.trim()) secrets.push(v.trim())
+  }
+}
+
+function formatSettingsSummary(pub) {
+  return [
+    `作者：${pub.brand.author}`,
+    `标语：${pub.brand.slogan}`,
+    `封面提供方：${pub.coverProvider}（ark=${pub.arkModel}，bailian=${pub.bailianModel}）`,
+    `参考图：${pub.portraitUrl || '(未设置)'}`,
+    `朱雀质检：${pub.zhuqueKeySet ? `已配置（****${pub.zhuqueKeyTail}）` : '未配置'}`,
+    `生图密钥：火山方舟 ${pub.arkKeySet ? '已配置' : '未配置'} / 百炼 ${pub.bailianKeySet ? '已配置' : '未配置'}`,
+    `公众号草稿箱：${pub.mp.appId ? `${pub.mp.name ? `${pub.mp.name} · ` : ''}${pub.mp.appId}（AppSecret ${pub.mp.appSecretSet ? '已配置' : '未配置'}）` : '未配置'}`,
+  ].join('\n')
+}
+
+async function handleSettings(argv, io, secrets) {
+  const { action, rest } = splitSubAction(argv)
+  if (!action) {
+    const { values } = parseSubcommandArgs(rest)
+    return emitSuccess(io, values.json, { help: SUB_HELP.settings }, SUB_HELP.settings)
+  }
+  if (action === 'get') {
+    const { values, positionals } = parseSubcommandArgs(rest)
+    if (values.help) return emitSuccess(io, values.json, { help: SUB_HELP.settings }, SUB_HELP.settings)
+    assertPositionals(positionals, 0, '用法：wechat-studio settings get [--data-dir <path>] [--json]')
+    const settings = await readSettings(resolveDataDir(values, io.env))
+    const pub = publicSettings(settings)
+    return emitSuccess(io, values.json, { settings: pub }, formatSettingsSummary(pub))
+  }
+  if (action === 'set') {
+    const { values, positionals } = parseSubcommandArgs(rest, {
+      author: { type: 'string' },
+      slogan: { type: 'string' },
+      style: { type: 'string' },
+      theme: { type: 'string' },
+      'cover-provider': { type: 'string' },
+      'ark-model': { type: 'string' },
+      'bailian-model': { type: 'string' },
+      'portrait-url': { type: 'string' },
+      'zhuque-key': { type: 'string' },
+      'zhuque-endpoint': { type: 'string' },
+      'ark-key': { type: 'string' },
+      'bailian-key': { type: 'string' },
+      'mp-name': { type: 'string' },
+      'mp-app-id': { type: 'string' },
+      'mp-app-secret': { type: 'string' },
+      'from-json': { type: 'string' },
+    })
+    if (values.help) return emitSuccess(io, values.json, { help: SUB_HELP.settings }, SUB_HELP.settings)
+    assertPositionals(positionals, 0, '用法：wechat-studio settings set [options]（运行 wechat-studio settings --help 查看选项）')
+    const patch = {}
+    if (values['from-json']) {
+      const parsed = await readJsonFile(values['from-json'], '配置 JSON', io)
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        throw new UsageError('配置 JSON 必须是对象。')
+      }
+      Object.assign(patch, parsed)
+    }
+    if (values.style !== undefined) {
+      if (!STYLES.includes(values.style)) throw new UsageError(`不支持的排版风格：${values.style}（可选：${STYLES.join(', ')}）`)
+      patch.style = values.style
+    }
+    if (values.theme !== undefined) {
+      if (!THEMES.includes(values.theme)) throw new UsageError(`不支持的配色主题：${values.theme}（可选：${THEMES.join(', ')}）`)
+      patch.theme = values.theme
+    }
+    if (values.author !== undefined || values.slogan !== undefined) {
+      patch.brand = { ...(patch.brand ?? {}) }
+      if (values.author !== undefined) patch.brand.author = values.author
+      if (values.slogan !== undefined) patch.brand.slogan = values.slogan
+    }
+    if (values['cover-provider'] !== undefined) patch.coverProvider = values['cover-provider']
+    if (values['ark-model'] !== undefined) patch.arkModel = values['ark-model']
+    if (values['bailian-model'] !== undefined) patch.bailianModel = values['bailian-model']
+    if (values['portrait-url'] !== undefined) patch.portraitUrl = values['portrait-url']
+    if (values['zhuque-key'] !== undefined) patch.zhuqueKey = values['zhuque-key']
+    if (values['zhuque-endpoint'] !== undefined) patch.zhuqueEndpoint = values['zhuque-endpoint']
+    if (values['ark-key'] !== undefined) patch.arkKey = values['ark-key']
+    if (values['bailian-key'] !== undefined) patch.bailianKey = values['bailian-key']
+    if (values['mp-name'] !== undefined || values['mp-app-id'] !== undefined || values['mp-app-secret'] !== undefined) {
+      patch.mp = { ...(patch.mp ?? {}) }
+      if (values['mp-name'] !== undefined) patch.mp.name = values['mp-name']
+      if (values['mp-app-id'] !== undefined) patch.mp.appId = values['mp-app-id']
+      if (values['mp-app-secret'] !== undefined) patch.mp.appSecret = values['mp-app-secret']
+    }
+    collectPatchSecrets(patch, secrets)
+    if (!Object.keys(patch).length) {
+      throw new UsageError('请至少提供一个要更新的配置项（运行 wechat-studio settings --help 查看选项）。')
+    }
+    let next
+    try {
+      next = await updateSettings(resolveDataDir(values, io.env), patch)
+    } catch (err) {
+      if (err?.status === 400) throw new UsageError(err.message)
+      throw err
+    }
+    const pub = publicSettings(next)
+    return emitSuccess(io, values.json, { settings: pub }, `已更新工作区配置：\n${formatSettingsSummary(pub)}`)
+  }
+  throw new UsageError(`未知的 settings 子命令：${action}（支持 get、set）`)
+}
+
+function detectImageFormat(buffer) {
+  if (buffer.length >= 8 && buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47) return 'png'
+  if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return 'jpeg'
+  return null
+}
+
+async function handleDraft(argv, io, secrets) {
+  const { action, rest } = splitSubAction(argv)
+  if (!action) {
+    const { values } = parseSubcommandArgs(rest)
+    return emitSuccess(io, values.json, { help: SUB_HELP.draft }, SUB_HELP.draft)
+  }
+  if (action === 'verify') {
+    const { values, positionals } = parseSubcommandArgs(rest, {
+      'app-id': { type: 'string' },
+      'app-secret': { type: 'string' },
+    })
+    if (values.help) return emitSuccess(io, values.json, { help: SUB_HELP.draft }, SUB_HELP.draft)
+    assertPositionals(positionals, 0, '用法：wechat-studio draft verify [--app-id <id>] [--app-secret <secret>]')
+    const settings = await readSettings(resolveDataDir(values, io.env))
+    const appId = String(values['app-id'] ?? io.env[ENV_WECHAT_APP_ID] ?? settings.mp.appId ?? '').trim()
+    const appSecret = String(values['app-secret'] ?? io.env[ENV_WECHAT_APP_SECRET] ?? settings.mp.appSecret ?? '').trim()
+    if (appSecret) secrets.push(appSecret)
+    if (!appId || !appSecret) {
+      throw new UsageError(`缺少公众号 AppID 或 AppSecret，请通过 --app-id/--app-secret、环境变量 ${ENV_WECHAT_APP_ID}/${ENV_WECHAT_APP_SECRET} 或 wechat-studio settings set 配置。`)
+    }
+    const result = await verifyCredentials(appId, appSecret, io.fetchImpl)
+    const label = result.nickname ? `公众号凭证验证通过：${result.nickname}` : '公众号凭证验证通过。'
+    return emitSuccess(io, values.json, result, label)
+  }
+  if (action === 'push') {
+    const { values, positionals } = parseSubcommandArgs(rest, {
+      title: { type: 'string' },
+      author: { type: 'string' },
+      style: { type: 'string' },
+      theme: { type: 'string' },
+      banner: { type: 'string' },
+      'follow-card': { type: 'boolean', default: false },
+      avatar: { type: 'string' },
+      cover: { type: 'string' },
+      'app-id': { type: 'string' },
+      'app-secret': { type: 'string' },
+      'dry-run': { type: 'boolean', default: false },
+    })
+    if (values.help) return emitSuccess(io, values.json, { help: SUB_HELP.draft }, SUB_HELP.draft)
+    const usage = '用法：wechat-studio draft push <file.md|-> [--title <标题>] [--style <id>] [--theme <id>] [--banner <spec.json>] [--follow-card] [--cover <file>] [--dry-run]'
+    assertPositionals(positionals, 1, usage)
+    const file = positionals[0]
+    if (!file) throw new UsageError(usage)
+    if (values.style && !STYLES.includes(values.style)) {
+      throw new UsageError(`不支持的排版风格：${values.style}（可选：${STYLES.join(', ')}）`)
+    }
+    if (values.theme && !THEMES.includes(values.theme)) {
+      throw new UsageError(`不支持的配色主题：${values.theme}（可选：${THEMES.join(', ')}）`)
+    }
+    if (file === '-' && values.banner === '-') {
+      throw new UsageError('正文和 --banner 不能同时从标准输入 - 读取。')
+    }
+    if (values.avatar && !/^https:\/\//.test(values.avatar.trim())) {
+      throw new UsageError('--avatar 必须是 https:// 图片地址。')
+    }
+    const dataDir = resolveDataDir(values, io.env)
+    const [markdown, settings, bannerSpec] = await Promise.all([
+      readTextFile(file, 'Markdown 文件', io),
+      readSettings(dataDir),
+      values.banner ? readJsonFile(values.banner, '横幅规格 JSON', io) : Promise.resolve(null),
+    ])
+    if (!markdown.trim()) throw new UsageError('Markdown 文件为空。')
+    if (bannerSpec !== null) {
+      if (!bannerSpec || typeof bannerSpec !== 'object' || Array.isArray(bannerSpec)) {
+        throw new UsageError('横幅规格必须是 JSON 对象（请参考 skills/banner.md）。')
+      }
+      const bannerWarnings = await checkBanner(bannerSpec)
+      const fatal = bannerWarnings.find(w => w.startsWith('规格画不出来'))
+      if (fatal) throw new UsageError(`横幅规格无效：${fatal}`)
+    }
+    let coverImage = null
+    if (values.cover) {
+      let buffer
+      try {
+        buffer = await readFile(values.cover)
+      } catch (err) {
+        if (err.code === 'ENOENT') throw new UsageError(`找不到封面文件：${values.cover}`)
+        throw err
+      }
+      const format = detectImageFormat(buffer)
+      if (!format) throw new UsageError('封面图片仅支持 PNG 或 JPEG 格式。')
+      coverImage = { buffer, format }
+    }
+    const prefs = resolveLayoutPreferences(settings)
+    const style = values.style ?? prefs.style
+    const theme = values.theme ?? prefs.theme
+    const author = (values.author ?? '').trim() || settings.brand.author
+    const rendered = await renderWechatHtml(markdown, {
+      style,
+      theme,
+      banner: bannerSpec ?? undefined,
+      followCard: values['follow-card'],
+      brand: { ...settings.brand, author },
+      avatarUrl: values.avatar?.trim() ?? '',
+    })
+    const title = (values.title ?? '').trim() || rendered.title || (file === '-' ? '未命名' : basename(file, '.md'))
+    if (values['dry-run']) {
+      const payload = {
+        dryRun: true,
+        title,
+        author,
+        style,
+        theme,
+        chars: rendered.html.length,
+        hasCover: Boolean(coverImage),
+        issues: rendered.issues,
+      }
+      return emitSuccess(io, values.json, payload, `本地预检完成（未推送）：《${title}》（${style} · ${theme}，${rendered.html.length} 字符）`)
+    }
+    const appId = String(values['app-id'] ?? io.env[ENV_WECHAT_APP_ID] ?? settings.mp.appId ?? '').trim()
+    const appSecret = String(values['app-secret'] ?? io.env[ENV_WECHAT_APP_SECRET] ?? settings.mp.appSecret ?? '').trim()
+    if (appSecret) secrets.push(appSecret)
+    if (!appId || !appSecret) {
+      throw new UsageError(`缺少公众号 AppID 或 AppSecret，请通过 --app-id/--app-secret、环境变量 ${ENV_WECHAT_APP_ID}/${ENV_WECHAT_APP_SECRET} 或 wechat-studio settings set 配置。`)
+    }
+    const result = await pushWechatDraft({
+      article: { title },
+      html: rendered.html,
+      settings: {
+        ...settings,
+        brand: { ...settings.brand, author },
+        mp: { ...settings.mp, appId, appSecret },
+      },
+      cover: coverImage,
+      fetchImpl: io.fetchImpl,
+    })
+    const payload = {
+      mediaId: result.mediaId,
+      title,
+      author,
+      style,
+      theme,
+      chars: rendered.html.length,
+      warnings: result.warnings,
+    }
+    const warnText = result.warnings.length ? `\n提醒：\n- ${result.warnings.join('\n- ')}` : ''
+    return emitSuccess(io, values.json, payload, `已推送到公众号草稿箱：${result.mediaId}（《${title}》）${warnText}`)
+  }
+  throw new UsageError(`未知的 draft 子命令：${action}（支持 push、verify）`)
+}
+
 export async function runCli(argv = [], rawIo = {}) {
   const io = {
     stdin: rawIo.stdin ?? process.stdin,
@@ -765,6 +1061,8 @@ export async function runCli(argv = [], rawIo = {}) {
       case 'detect': return await handleDetect(subArgv, io, secrets)
       case 'cover': return await handleCover(subArgv, io, secrets)
       case 'style': return await handleStyle(subArgv, io, secrets)
+      case 'settings': return await handleSettings(subArgv, io, secrets)
+      case 'draft': return await handleDraft(subArgv, io, secrets)
       default:
         throw new UsageError(`未知命令：${command}。运行 wechat-studio --help 查看可用子命令。`)
     }

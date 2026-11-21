@@ -55,4 +55,12 @@ wechat-studio cover --prompt-file final-prompt.txt --style felt --out cover.png 
 # 7. 复盘数据导入与汇总
 wechat-studio insights import export.xls --json
 wechat-studio insights summary --range 30 --json
+
+# 8. 工作区配置（作者/标语/默认排版/服务凭证，不含明文回显）
+wechat-studio settings get --json
+wechat-studio settings set --author "你的公众号名" --slogan "一句话介绍" --style neo --theme forest --json
+
+# 9. 公众号草稿箱推送（支持 --dry-run 本地预检，也支持环境变量 WECHAT_APP_ID / WECHAT_APP_SECRET）
+wechat-studio draft verify --json
+wechat-studio draft push article.md --style neo --theme forest --banner banner.json --follow-card --cover cover.png --json
 ```

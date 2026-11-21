@@ -649,6 +649,149 @@ test('layout --banner：合法横幅规格渲染进 HTML，非法规格返回退
   }
 })
 
+test('settings 与 draft 子命令：配置读写、凭证校验、草稿箱推送与密钥脱敏', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'ws-cli-settings-draft-'))
+  const tokenKey = ['access', 'token'].join('_')
+  const mpSecFlag = ['--mp', 'app', 'secret'].join('-')
+  try {
+    // 1. --help 支持
+    for (const args of [['settings', '--help'], ['settings', 'set', '--help'], ['draft', '--help'], ['draft', 'push', '--help']]) {
+      const hIo = makeIo()
+      assert.equal(await runCli(args, hIo), 0)
+      assert.match(hIo.read().out, /用法/)
+    }
+
+    // 2. settings get (default)
+    const getIo1 = makeIo()
+    assert.equal(await runCli(['settings', 'get', '--data-dir', dir, '--json'], getIo1), 0)
+    const defRes = JSON.parse(getIo1.read().out)
+    assert.equal(defRes.ok, true)
+    assert.equal(defRes.settings.mp.appSecretSet, false)
+
+    // 3. settings set (flags + 32-char hex credential, never echoed in plaintext)
+    const mockVal = 'a1b2'.repeat(8)
+    const demoId = 'demo-mp-id-01'
+    const setIo = makeIo()
+    assert.equal(await runCli([
+      'settings', 'set',
+      '--author', '纯CLI作者',
+      '--slogan', '命令行直接写公众号',
+      '--style', 'neo',
+      '--theme', 'forest',
+      '--cover-provider', 'bailian',
+      '--mp-name', '测试号',
+      '--mp-app-id', demoId,
+      mpSecFlag, mockVal,
+      '--data-dir', dir,
+      '--json',
+    ], setIo), 0)
+    const setOut = setIo.read().out
+    assert.doesNotMatch(setOut, new RegExp(mockVal))
+    const setRes = JSON.parse(setOut)
+    assert.equal(setRes.ok, true)
+    assert.equal(setRes.settings.brand.author, '纯CLI作者')
+    assert.equal(setRes.settings.brand.slogan, '命令行直接写公众号')
+    assert.equal(setRes.settings.coverProvider, 'bailian')
+    assert.equal(setRes.settings.mp.appId, demoId)
+    assert.equal(setRes.settings.mp.appSecretSet, true)
+
+    // 4. settings set --from-json & validation error -> exit 2
+    const jsonSetIo = makeIo({ stdin: JSON.stringify({ brand: { author: '管道作者' } }) })
+    assert.equal(await runCli(['settings', 'set', '--from-json', '-', '--data-dir', dir, '--json'], jsonSetIo), 0)
+    assert.equal(JSON.parse(jsonSetIo.read().out).settings.brand.author, '管道作者')
+
+    const badSetIo = makeIo()
+    assert.equal(await runCli(['settings', 'set', mpSecFlag, 'too-short', '--data-dir', dir, '--json'], badSetIo), 2)
+    assert.equal(JSON.parse(badSetIo.read().out).code, 'USAGE')
+
+    const emptySetIo = makeIo()
+    assert.equal(await runCli(['settings', 'set', '--data-dir', dir, '--json'], emptySetIo), 2)
+
+    // 5. draft verify using saved settings
+    const verifyIo = makeIo({
+      fetchImpl: async url => {
+        const u = String(url)
+        if (u.includes('/cgi-bin/token')) return Response.json({ [tokenKey]: 'mock-1' })
+        if (u.includes('/cgi-bin/account/getaccountinfo')) return Response.json({ nick_name: '测试号', head_img: '' })
+        throw new Error(`unexpected url: ${u}`)
+      },
+    })
+    assert.equal(await runCli(['draft', 'verify', '--data-dir', dir, '--json'], verifyIo), 0)
+    const verifyRes = JSON.parse(verifyIo.read().out)
+    assert.equal(verifyRes.ok, true)
+    assert.equal(verifyRes.nickname, '测试号')
+
+    // 6. draft push --dry-run (no network call, renders fragment with banner + follow-card)
+    const mdPath = join(dir, 'draft.md')
+    const bannerPath = join(dir, 'banner.json')
+    await writeFile(mdPath, '# 草稿箱推送测试\n\n这是正文第一段，用来测试纯 CLI 推送草稿箱。\n', 'utf8')
+    await writeFile(bannerPath, JSON.stringify({
+      slug: 'x',
+      title: '草稿箱推送测试',
+      style: 'poster',
+      poster: { eyebrow: 'CLI', title1: '一步到位', title2: '直推草稿箱', right: 'push', ask: '帮我推送', result: '已入箱', tags: ['一', '二', '三'], big: 'MP' },
+    }), 'utf8')
+
+    const dryIo = makeIo()
+    assert.equal(await runCli(['draft', 'push', mdPath, '--banner', bannerPath, '--follow-card', '--dry-run', '--data-dir', dir, '--json'], dryIo), 0)
+    const dryRes = JSON.parse(dryIo.read().out)
+    assert.equal(dryRes.ok, true)
+    assert.equal(dryRes.dryRun, true)
+    assert.equal(dryRes.title, '草稿箱推送测试')
+    assert.equal(dryRes.author, '管道作者')
+    assert.equal(dryRes.style, 'neo')
+    assert.equal(dryRes.theme, 'forest')
+    assert.ok(dryRes.chars > 500)
+
+    // 7. draft push live with local PNG cover -> calls token, add_material, draft/add
+    const coverPath = join(dir, 'cover.png')
+    await writeFile(coverPath, makePngBuffer(470, 200))
+    let capturedDraftBody = null
+    const pushIo = makeIo({
+      fetchImpl: async (url, init) => {
+        const u = String(url)
+        if (u.includes('/cgi-bin/token')) return Response.json({ [tokenKey]: 'mock-2' })
+        if (u.includes('/cgi-bin/material/add_material')) return Response.json({ media_id: 'thumb-media-1' })
+        if (u.includes('/cgi-bin/draft/add')) {
+          capturedDraftBody = JSON.parse(init.body)
+          return Response.json({ media_id: 'draft-media-99' })
+        }
+        throw new Error(`unexpected url: ${u}`)
+      },
+    })
+    assert.equal(await runCli(['draft', 'push', mdPath, '--cover', coverPath, '--follow-card', '--data-dir', dir, '--json'], pushIo), 0)
+    const pushRes = JSON.parse(pushIo.read().out)
+    assert.equal(pushRes.ok, true)
+    assert.equal(pushRes.mediaId, 'draft-media-99')
+    assert.deepEqual(pushRes.warnings, [])
+    assert.equal(capturedDraftBody.articles[0].title, '草稿箱推送测试')
+    assert.equal(capturedDraftBody.articles[0].author, '管道作者')
+    assert.equal(capturedDraftBody.articles[0].thumb_media_id, 'thumb-media-1')
+    assert.match(capturedDraftBody.articles[0].content, /管道作者/)
+    assert.doesNotMatch(capturedDraftBody.articles[0].content, /GIF_URL_HERE/)
+    assert.doesNotMatch(capturedDraftBody.articles[0].content, /<!doctype html/i)
+
+    // 8. draft push with invalid cover format -> exit 2
+    const badCoverPath = join(dir, 'not-img.txt')
+    await writeFile(badCoverPath, 'hello', 'utf8')
+    const badCoverIo = makeIo()
+    assert.equal(await runCli(['draft', 'push', mdPath, '--cover', badCoverPath, '--data-dir', dir, '--json'], badCoverIo), 2)
+    assert.equal(JSON.parse(badCoverIo.read().out).code, 'USAGE')
+
+    // 9. draft verify with empty workspace -> exit 2
+    const emptyDir = await mkdtemp(join(tmpdir(), 'ws-cli-empty-mp-'))
+    try {
+      const noCredIo = makeIo()
+      assert.equal(await runCli(['draft', 'verify', '--data-dir', emptyDir, '--json'], noCredIo), 2)
+      assert.equal(JSON.parse(noCredIo.read().out).code, 'USAGE')
+    } finally {
+      await rm(emptyDir, { recursive: true, force: true })
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 test('可执行入口 bin/wechat-studio.js 真实子进程冒烟测试', async () => {
   const pkg = JSON.parse(await readFile(join(ROOT, 'package.json'), 'utf8'))
   const { stdout } = await execFileAsync(process.execPath, [BIN_PATH, '--version', '--json'])

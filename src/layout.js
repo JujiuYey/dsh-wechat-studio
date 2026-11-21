@@ -38,6 +38,21 @@ export async function renderLayout(markdown, { style, theme, banner, followCard 
   return { html, report: report.trim() }
 }
 
+/**
+ * 渲染可直接推送到微信公众号草稿箱的正文 HTML 片段（不含预览页壳子）。
+ */
+export async function renderWechatHtml(markdown, { style, theme, banner, followCard = false, brand, avatarUrl } = {}) {
+  return engine.renderFragment(String(markdown), {
+    outro: followCard ? 'true' : 'false',
+    brandAuthor: brand?.author || undefined,
+    brandSlogan: brand?.slogan || undefined,
+    avatarUrl: avatarUrl || '',
+    banner: banner ? jsonCopy(banner) : undefined,
+    style: STYLES.includes(style) ? style : undefined,
+    theme: THEMES.includes(theme) ? theme : undefined,
+  })
+}
+
 export const SVG_CARD_KINDS = ['svg-table', 'svg-bars', 'svg-steps', 'svg-timeline', 'svg-breakdown', 'svg-compare', 'svg-concept', 'svg-phone']
 const SVG_ELEMENTS = new Set(['section', 'svg', 'g', 'rect', 'circle', 'line', 'path', 'text', 'animate', 'animateTransform', 'set'])
 const SVG_ATTRIBUTES = new Set([
