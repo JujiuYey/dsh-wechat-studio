@@ -27,6 +27,8 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
+          # git show --check needs the parent to inspect only the release commit.
+          fetch-depth: 2
           persist-credentials: false
       - uses: actions/setup-node@v6
         with:
