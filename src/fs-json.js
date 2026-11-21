@@ -1,8 +1,9 @@
 // JSON 文件的可靠读写：先 fsync 临时文件再替换，并保留上一版；读坏文件时回退备份或隔离，绝不当成空文件。
+import { randomBytes } from 'node:crypto'
 import { access, open, readFile, rename } from 'node:fs/promises'
 
 export async function writeJsonAtomic(file, value, { indent = 1 } = {}) {
-  const tmp = `${file}.${process.pid}.tmp`
+  const tmp = `${file}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`
   const handle = await open(tmp, 'w', 0o600)
   try {
     await handle.writeFile(JSON.stringify(value, null, indent))

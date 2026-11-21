@@ -1,9 +1,12 @@
 import { COVER_PROVIDERS, modelsFor } from './cover-options.js'
 import { DEFAULT_PERSONA, normalizePersona, PERSONA_GENDERS, PERSONA_OUTFITS } from './cover-persona.js'
 import { findBlocked, loadCoverBlocklist } from './cover-prompt.js'
+import { writeJsonAtomic } from './fs-json.js'
+import { STYLES, THEMES } from './layout.js'
+import { withFileLock } from './store.js'
 // 设置：存在 <DSH_HOME>/wechat-studio/settings.json（权限 600）。
 // 朱雀 API Key 只留在本机，接口从不把明文返回给页面，只说「有没有」和末四位。
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { mkdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { checkEndpoint, DEFAULT_ENDPOINT } from './zhuque.js'
 
@@ -26,15 +29,44 @@ const brandField = (value, limit) => typeof value === 'string' ? value.trim().sl
 
 const lines = value => (Array.isArray(value) ? value.filter(v => typeof v === 'string').map(v => v.trim()).filter(Boolean).slice(0, 20) : null)
 
-export async function readSettings(root) {
-  let saved = {}
+async function parseSettingsFile(file) {
+  let raw
   try {
-    saved = JSON.parse(await readFile(join(root, 'settings.json'), 'utf8'))
+    raw = await readFile(file, 'utf8')
+  } catch (err) {
+    if (err.code === 'ENOENT') return { status: 'missing' }
+    throw err
+  }
+  try {
+    const parsed = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return { status: 'corrupt' }
+    return { status: 'ok', value: parsed }
   } catch {
-    // 没有文件或者内容坏了，用默认值
+    return { status: 'corrupt' }
+  }
+}
+
+export async function readSettings(root) {
+  const file = join(root, 'settings.json')
+  let saved = {}
+  const main = await parseSettingsFile(file)
+  if (main.status === 'ok') {
+    saved = main.value
+  } else {
+    const backup = await parseSettingsFile(`${file}.bak`)
+    if (backup.status === 'ok') {
+      saved = backup.value
+    } else if (main.status === 'corrupt') {
+      throw Object.assign(
+        new Error('settings.json 已损坏，无法解析；为避免覆盖原有配置与凭证，已中止操作，请检查或修复该文件。'),
+        { status: 500, code: 'SETTINGS_CORRUPT' },
+      )
+    }
   }
   return {
     ...DEFAULTS, ...saved,
+    style: STYLES.includes(saved.style) ? saved.style : null,
+    theme: THEMES.includes(saved.theme) ? saved.theme : null,
     brand: {
       author: brandField(saved.brand?.author, 32) || DEFAULT_BRAND.author,
       slogan: brandField(saved.brand?.slogan, 80) || DEFAULT_BRAND.slogan,
@@ -69,9 +101,19 @@ export async function readSettings(root) {
  * @param {object} body - 页面发来的修改。
  */
 export async function updateSettings(root, body) {
-  const next = await readSettings(root)
-  if (typeof body.style === 'string') next.style = body.style
-  if (typeof body.theme === 'string') next.theme = body.theme
+  const file = join(root, 'settings.json')
+  return withFileLock(`${file}.lock`, async () => {
+    const next = await readSettings(root)
+    if (body.style !== undefined) {
+      if (body.style === null || body.style === '') next.style = null
+      else if (typeof body.style === 'string' && STYLES.includes(body.style)) next.style = body.style
+      else throw Object.assign(new Error(`不支持的排版风格：${body.style}（可选：${STYLES.join(', ')}）`), { status: 400 })
+    }
+    if (body.theme !== undefined) {
+      if (body.theme === null || body.theme === '') next.theme = null
+      else if (typeof body.theme === 'string' && THEMES.includes(body.theme)) next.theme = body.theme
+      else throw Object.assign(new Error(`不支持的配色主题：${body.theme}（可选：${THEMES.join(', ')}）`), { status: 400 })
+    }
   if (lines(body.fixedLines)) next.fixedLines = lines(body.fixedLines)
   if (typeof body.zhuqueKey === 'string') next.zhuqueKey = body.zhuqueKey.trim().slice(0, 400)
   if (typeof body.zhuqueEndpoint === 'string') next.zhuqueEndpoint = body.zhuqueEndpoint.trim() ? checkEndpoint(body.zhuqueEndpoint.trim()) : DEFAULT_ENDPOINT
@@ -145,17 +187,18 @@ export async function updateSettings(root, body) {
       throw Object.assign(new Error('AppSecret 是 32 位十六进制字符串，请到公众号「设置与开发 → 基本配置」复制完整的一串。'), { status: 400 })
     }
   }
-  await mkdir(root, { recursive: true })
-  const file = join(root, 'settings.json')
-  await writeFile(`${file}.tmp`, JSON.stringify(next, null, 1), { mode: 0o600 })
-  await rename(`${file}.tmp`, file)
-  return next
+    await mkdir(root, { recursive: true })
+    await writeJsonAtomic(file, next)
+    return next
+  })
 }
 
 /** 给页面看的设置：不含密钥明文。 */
 export function publicSettings(settings) {
   const key = settings.zhuqueKey
   return {
+    style: settings.style ?? null,
+    theme: settings.theme ?? null,
     fixedLines: settings.fixedLines,
     brand: settings.brand,
     arkModel: settings.arkModel,

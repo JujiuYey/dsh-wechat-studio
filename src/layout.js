@@ -41,7 +41,7 @@ export async function renderLayout(markdown, { style, theme, banner, followCard 
 /**
  * 渲染可直接推送到微信公众号草稿箱的正文 HTML 片段（不含预览页壳子）。
  */
-export async function renderWechatHtml(markdown, { style, theme, banner, followCard = false, brand, avatarUrl } = {}) {
+export async function renderWechatHtml(markdown, { style, theme, banner, followCard = false, brand, avatarUrl, name = '' } = {}) {
   return engine.renderFragment(String(markdown), {
     outro: followCard ? 'true' : 'false',
     brandAuthor: brand?.author || undefined,
@@ -50,6 +50,7 @@ export async function renderWechatHtml(markdown, { style, theme, banner, followC
     banner: banner ? jsonCopy(banner) : undefined,
     style: STYLES.includes(style) ? style : undefined,
     theme: THEMES.includes(theme) ? theme : undefined,
+    name,
   })
 }
 

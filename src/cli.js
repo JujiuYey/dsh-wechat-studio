@@ -185,7 +185,8 @@ push 选项:
   --avatar <https://...>               关注卡/横幅头像地址（留空使用首字徽章）
   --cover <file.png|jpg>               本地封面图（留空自动上传纯色占位图并提示）
   --app-id <id> / --app-secret <sec>   临时覆盖公众号凭证（也支持环境变量 WECHAT_APP_ID / WECHAT_APP_SECRET）
-  --dry-run                            仅在本地完成排版与自查，不调用微信接口`,
+  --dry-run                            仅在本地完成排版与自查，不调用微信接口
+  --force                              忽略阻断级预检问题（本地图片、飞书临时链接、稿件占位）强制推送`,
 }
 
 function scrubSecrets(text, secrets = []) {
@@ -788,6 +789,7 @@ function formatSettingsSummary(pub) {
   return [
     `作者：${pub.brand.author}`,
     `标语：${pub.brand.slogan}`,
+    `默认排版：${pub.style ?? 'std（默认）'} · ${pub.theme ?? 'orange（默认）'}`,
     `封面提供方：${pub.coverProvider}（ark=${pub.arkModel}，bailian=${pub.bailianModel}）`,
     `参考图：${pub.portraitUrl || '(未设置)'}`,
     `朱雀质检：${pub.zhuqueKeySet ? `已配置（****${pub.zhuqueKeyTail}）` : '未配置'}`,
@@ -926,9 +928,10 @@ async function handleDraft(argv, io, secrets) {
       'app-id': { type: 'string' },
       'app-secret': { type: 'string' },
       'dry-run': { type: 'boolean', default: false },
+      force: { type: 'boolean', default: false },
     })
     if (values.help) return emitSuccess(io, values.json, { help: SUB_HELP.draft }, SUB_HELP.draft)
-    const usage = '用法：wechat-studio draft push <file.md|-> [--title <标题>] [--style <id>] [--theme <id>] [--banner <spec.json>] [--follow-card] [--cover <file>] [--dry-run]'
+    const usage = '用法：wechat-studio draft push <file.md|-> [--title <标题>] [--style <id>] [--theme <id>] [--banner <spec.json>] [--follow-card] [--cover <file>] [--dry-run] [--force]'
     assertPositionals(positionals, 1, usage)
     const file = positionals[0]
     if (!file) throw new UsageError(usage)
@@ -983,8 +986,9 @@ async function handleDraft(argv, io, secrets) {
       followCard: values['follow-card'],
       brand: { ...settings.brand, author },
       avatarUrl: values.avatar?.trim() ?? '',
+      name: file === '-' ? '' : basename(file),
     })
-    const title = (values.title ?? '').trim() || rendered.title || (file === '-' ? '未命名' : basename(file, '.md'))
+    const title = (values.title ?? '').trim() || rendered.title || '未命名'
     if (values['dry-run']) {
       const payload = {
         dryRun: true,
@@ -995,8 +999,23 @@ async function handleDraft(argv, io, secrets) {
         chars: rendered.html.length,
         hasCover: Boolean(coverImage),
         issues: rendered.issues,
+        blocking: rendered.blocking,
       }
-      return emitSuccess(io, values.json, payload, `本地预检完成（未推送）：《${title}》（${style} · ${theme}，${rendered.html.length} 字符）`)
+      const otherIssues = rendered.issues.filter(item => !rendered.blocking.includes(item))
+      const lines = [`本地预检完成（未推送）：《${title}》（${style} · ${theme}，${rendered.html.length} 字符）`]
+      if (rendered.blocking.length) {
+        lines.push(`发现 ${rendered.blocking.length} 项阻断问题（正式推送将被拦截，修复后重试或加 --force 强制推送）：`, ...rendered.blocking.map(x => `- ${x}`))
+      }
+      if (otherIssues.length) {
+        lines.push('提醒：', ...otherIssues.map(x => `- ${x}`))
+      }
+      if (!rendered.blocking.length && !otherIssues.length) {
+        lines.push('预检通过，未发现问题。')
+      }
+      return emitSuccess(io, values.json, payload, lines.join('\n'))
+    }
+    if (rendered.blocking.length && !values.force) {
+      throw new UsageError(`发布前预检发现阻断项，已阻止推送（确认继续请加 --force）：${rendered.blocking.join('；')}`)
     }
     const appId = String(values['app-id'] ?? io.env[ENV_WECHAT_APP_ID] ?? settings.mp.appId ?? '').trim()
     const appSecret = String(values['app-secret'] ?? io.env[ENV_WECHAT_APP_SECRET] ?? settings.mp.appSecret ?? '').trim()
@@ -1022,9 +1041,11 @@ async function handleDraft(argv, io, secrets) {
       style,
       theme,
       chars: rendered.html.length,
+      issues: rendered.issues,
       warnings: result.warnings,
     }
-    const warnText = result.warnings.length ? `\n提醒：\n- ${result.warnings.join('\n- ')}` : ''
+    const allNotices = [...rendered.issues, ...result.warnings]
+    const warnText = allNotices.length ? `\n提醒：\n- ${allNotices.join('\n- ')}` : ''
     return emitSuccess(io, values.json, payload, `已推送到公众号草稿箱：${result.mediaId}（《${title}》）${warnText}`)
   }
   throw new UsageError(`未知的 draft 子命令：${action}（支持 push、verify）`)

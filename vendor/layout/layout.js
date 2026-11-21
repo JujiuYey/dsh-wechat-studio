@@ -1716,9 +1716,10 @@ export function renderFragment(source, { banner: bannerSpec, style: argStyle, th
   Object.assign(meta, brand)
   if (outro !== undefined && outro !== null) meta.outro = outro
   const m = re(String.raw`^#\s+(.+)$`, 'm').search(md)
-  const base = name.split(/[\\/]/).pop()
+  const base = String(name || '').split(/[\\/]/).pop()
   const dot = base.lastIndexOf('.')
-  const title = get(meta, 'title') || (m ? strip(m[1]) : dot > 0 ? base.slice(0, dot) : base)
+  const nameTitle = dot > 0 ? base.slice(0, dot) : base
+  const title = get(meta, 'title') || (m ? strip(m[1]) : nameTitle)
   let style = argStyle || get(meta, 'style', 'std'), theme = argTheme || get(meta, 'theme', 'orange')
   if (!Object.hasOwn(STYLES, style)) style = 'std'
   if (!Object.hasOwn(THEMES, theme)) theme = 'orange'
@@ -1743,6 +1744,7 @@ export function renderFragment(source, { banner: bannerSpec, style: argStyle, th
     } else {
       bannerHtml = B.build(spec)
     }
+    for (const x of B.checkSpec(spec, [bannerHtml])) warn('横幅：' + x)
   }
   const chRaw = Array.from(String(get(meta, 'author', AUTHOR) || AUTHOR).trim())[0] || '文'
   const avatarInitial = /^[a-z]$/.test(chRaw) ? chRaw.toUpperCase() : chRaw
@@ -1766,5 +1768,13 @@ export function renderFragment(source, { banner: bannerSpec, style: argStyle, th
   const finalBody = fillAvatar(body, u)
   const html = (finalBanner ? `<section style="margin:0 0 24px">${finalBanner}</section>` : '') + finalBody
   const issues = check(md, body, bannerHtml, stat)
-  return { title, style, theme, html, issues }
+  const blocking = issues.filter(issue => issue.includes('飞书临时链接') || issue.includes('本地路径或 base64'))
+  const prose = re(String.raw`(?ms)^\s*(` + '```' + String.raw`|~~~).*?^\s*\1[^\n]*`).sub('', md)
+  const placeholders = re(String.raw`\[(?:可补|截图)[：:][^\]\n]*\]`).findall(prose)
+  if (placeholders.length) {
+    const msg = `还有 ${placeholders.length} 处稿件占位：` + placeholders.slice(0, 3).join('、')
+    blocking.push(msg)
+    issues.push(msg)
+  }
+  return { title, style, theme, html, issues, blocking }
 }

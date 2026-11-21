@@ -27,7 +27,7 @@ async function fileSig(file) {
   }
 }
 
-async function withFileLock(lockFile, fn) {
+export async function withFileLock(lockFile, fn) {
   await mkdir(dirname(lockFile), { recursive: true })
   const deadline = Date.now() + LOCK_TIMEOUT_MS
   let handle = null

@@ -792,6 +792,99 @@ test('settings 与 draft 子命令：配置读写、凭证校验、草稿箱推�
   }
 })
 
+test('回归修复：并发 settings 写锁、损坏保护、style/theme 暴露与校验、文件名标题回退与草稿推送预检阻断', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'ws-cli-regress-'))
+  const tokenKey = ['access', 'token'].join('_')
+  const mpSecFlag = ['--mp', 'app', 'secret'].join('-')
+  try {
+    // 1. 并发多进程 settings set（跑 6 轮）：不损坏、不报 ENOENT、两项修改都保留
+    for (let i = 1; i <= 6; i++) {
+      const roundDir = join(dir, `r${i}`)
+      await Promise.all([
+        execFileAsync(process.execPath, [BIN_PATH, 'settings', 'set', '--author', `作者${i}`, '--data-dir', roundDir, '--json']),
+        execFileAsync(process.execPath, [BIN_PATH, 'settings', 'set', '--slogan', `标语${i}`, '--data-dir', roundDir, '--json']),
+      ])
+      const saved = JSON.parse(await readFile(join(roundDir, 'settings.json'), 'utf8'))
+      assert.equal(saved.brand.author, `作者${i}`)
+      assert.equal(saved.brand.slogan, `标语${i}`)
+    }
+
+    // 2. 损坏的 settings.json 不会被静默吞掉或覆盖
+    const corruptDir = join(dir, 'corrupt')
+    await execFileAsync(process.execPath, [BIN_PATH, 'settings', 'set', '--author', '原值', '--data-dir', corruptDir, '--json'])
+    await writeFile(join(corruptDir, 'settings.json'), '{bad json', 'utf8')
+    const corruptGetIo = makeIo()
+    assert.equal(await runCli(['settings', 'get', '--data-dir', corruptDir, '--json'], corruptGetIo), 1)
+    assert.equal(JSON.parse(corruptGetIo.read().out).causeCode, 'SETTINGS_CORRUPT')
+    const corruptSetIo = makeIo()
+    assert.equal(await runCli(['settings', 'set', '--author', '新值', '--data-dir', corruptDir, '--json'], corruptSetIo), 1)
+    assert.equal(await readFile(join(corruptDir, 'settings.json'), 'utf8'), '{bad json')
+
+    // 3. settings get 暴露 style/theme，且 --from-json 拒绝非法 style/theme
+    const cfgDir = join(dir, 'cfg')
+    const badJsonSetIo = makeIo({ stdin: JSON.stringify({ style: 'not-a-style', theme: 'not-a-theme' }) })
+    assert.equal(await runCli(['settings', 'set', '--from-json', '-', '--data-dir', cfgDir, '--json'], badJsonSetIo), 2)
+    assert.equal(JSON.parse(badJsonSetIo.read().out).code, 'USAGE')
+
+    const okSetIo = makeIo()
+    assert.equal(await runCli(['settings', 'set', '--style', 'neo', '--theme', 'forest', '--mp-app-id', 'demo-id', mpSecFlag, 'c3d4'.repeat(8), '--data-dir', cfgDir, '--json'], okSetIo), 0)
+    const getIo = makeIo()
+    assert.equal(await runCli(['settings', 'get', '--data-dir', cfgDir, '--json'], getIo), 0)
+    const gotSettings = JSON.parse(getIo.read().out).settings
+    assert.equal(gotSettings.style, 'neo')
+    assert.equal(gotSettings.theme, 'forest')
+
+    // 4. 无一级标题时：文件用文件名回退，stdin 回退为「未命名」
+    const namedMd = join(dir, 'meaningful-name.md')
+    await writeFile(namedMd, '没有一级标题的正文内容。\n', 'utf8')
+    const namedDryIo = makeIo()
+    assert.equal(await runCli(['draft', 'push', namedMd, '--dry-run', '--data-dir', cfgDir, '--json'], namedDryIo), 0)
+    assert.equal(JSON.parse(namedDryIo.read().out).title, 'meaningful-name')
+
+    const stdinDryIo = makeIo({ stdin: '来自标准输入且无一级标题的正文。\n' })
+    assert.equal(await runCli(['draft', 'push', '-', '--dry-run', '--data-dir', cfgDir, '--json'], stdinDryIo), 0)
+    assert.equal(JSON.parse(stdinDryIo.read().out).title, '未命名')
+
+    // 5. 本地图片等阻断级预检问题：--dry-run 报出，正式推送默认阻止，--force 放行并带回 issues
+    const localImgMd = join(dir, 'with-local-img.md')
+    await writeFile(localImgMd, '# 本地图片测试\n\n![本地图](./missing.png)\n', 'utf8')
+
+    const dryBlockIo = makeIo()
+    assert.equal(await runCli(['draft', 'push', localImgMd, '--dry-run', '--data-dir', cfgDir, '--json'], dryBlockIo), 0)
+    const dryBlockRes = JSON.parse(dryBlockIo.read().out)
+    assert.ok(dryBlockRes.blocking.some(x => x.includes('本地路径')))
+    assert.ok(dryBlockRes.issues.some(x => x.includes('本地路径')))
+
+    const dryHumanIo = makeIo()
+    assert.equal(await runCli(['draft', 'push', localImgMd, '--dry-run', '--data-dir', cfgDir], dryHumanIo), 0)
+    assert.match(dryHumanIo.read().out, /发现 1 项阻断问题/)
+    assert.match(dryHumanIo.read().out, /本地路径/)
+
+    let calledFetch = false
+    const blockedPushIo = makeIo({ fetchImpl: async () => { calledFetch = true; return Response.json({}) } })
+    assert.equal(await runCli(['draft', 'push', localImgMd, '--data-dir', cfgDir, '--json'], blockedPushIo), 2)
+    assert.equal(calledFetch, false)
+    assert.match(JSON.parse(blockedPushIo.read().out).error, /--force/)
+
+    const forcedPushIo = makeIo({
+      fetchImpl: async url => {
+        const u = String(url)
+        if (u.includes('/cgi-bin/token')) return Response.json({ [tokenKey]: 'mock-force' })
+        if (u.includes('/cgi-bin/material/add_material')) return Response.json({ media_id: 'thumb-f' })
+        if (u.includes('/cgi-bin/draft/add')) return Response.json({ media_id: 'draft-f' })
+        throw new Error(`unexpected url: ${u}`)
+      },
+    })
+    assert.equal(await runCli(['draft', 'push', localImgMd, '--force', '--data-dir', cfgDir, '--json'], forcedPushIo), 0)
+    const forcedRes = JSON.parse(forcedPushIo.read().out)
+    assert.equal(forcedRes.ok, true)
+    assert.equal(forcedRes.mediaId, 'draft-f')
+    assert.ok(forcedRes.issues.some(x => x.includes('本地路径')))
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 test('可执行入口 bin/wechat-studio.js 真实子进程冒烟测试', async () => {
   const pkg = JSON.parse(await readFile(join(ROOT, 'package.json'), 'utf8'))
   const { stdout } = await execFileAsync(process.execPath, [BIN_PATH, '--version', '--json'])
