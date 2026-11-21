@@ -312,6 +312,7 @@ test('没有当前图床配置时，已有 publicUrl 仍可免上传重插', asy
 })
 
 test('一个不可读的用户风格不会拖垮 state，并返回可诊断提示', async t => {
+  if (process.platform === 'win32') return t.skip('Windows chmod 不支持移除文件读取权限')
   if (process.getuid?.() === 0) return t.skip('root 不受文件权限限制')
   const { store, article, request } = await setup({ fetchImpl: arkSuccess })
   const customDir = join(store.root, 'skills', 'linyuebanzi-inline-diagram', 'references', 'styles')

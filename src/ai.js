@@ -21,7 +21,7 @@ export async function loadSkill(name, overrideDir) {
     if (!dir) continue
     try {
       const raw = await readFile(join(dir, `${name}.md`), 'utf8')
-      return raw.replace(/^---\n[\s\S]*?\n---\n/, '').trim()
+      return raw.replace(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/, '').trim()
     } catch (err) {
       if (err.code !== 'ENOENT') throw err
     }

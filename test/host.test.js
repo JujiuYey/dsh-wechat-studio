@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
@@ -119,6 +119,29 @@ test('四份 skill 都能读到，front matter 已去掉', async () => {
     assert.ok(!text.startsWith('---'), name)
   }
   await assert.rejects(loadSkill('../package'))
+})
+
+test('loadSkill 去除 LF 和 CRLF front matter，也支持文件末尾结束标记', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'ws-skill-newlines-'))
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  for (const newline of ['\n', '\r\n']) {
+    for (const body of ['', `${newline}正文内容${newline}`]) {
+      writeFileSync(join(dir, 'writer.md'), `---${newline}name: writer${newline}---${body}`)
+      assert.equal(await loadSkill('writer', dir), body.trim())
+    }
+  }
+})
+
+test('打包的 PDF 引擎无需 Chrome 或 pdftotext 即可提取文字', async () => {
+  const buffer = readFileSync(new URL('./fixtures/report.pdf', import.meta.url))
+  const { extractText, getDocumentProxy } = await import('../dist/unpdf.mjs')
+  const pdf = await getDocumentProxy(new Uint8Array(buffer))
+  try {
+    const { text } = await extractText(pdf, { mergePages: true })
+    assert.match(text, /AIGC 0\.93 fragment one/)
+  } finally {
+    await pdf.destroy()
+  }
 })
 
 test('朱雀结果落到段落：标红、通过、噪声带和「越改越差」', () => {

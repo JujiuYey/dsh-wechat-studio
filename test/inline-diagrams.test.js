@@ -277,6 +277,7 @@ test('没有图床地址时，旧插入块 ID 不会被误判为已插入', () =
 })
 
 test('单个风格文件不可读时跳过并提示，修复和内容变化后刷新缓存', async t => {
+  if (process.platform === 'win32') return t.skip('Windows chmod 不支持移除文件读取权限')
   if (process.getuid?.() === 0) return t.skip('root 不受文件权限限制')
   const root = mkdtempSync(join(tmpdir(), 'ws-inline-style-errors-'))
   const stylesDir = join(root, 'skills')

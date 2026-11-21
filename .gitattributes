@@ -1,0 +1,2 @@
+# Keep text bytes stable across platforms (golden tests and upstream hashes).
+* text=auto eol=lf
