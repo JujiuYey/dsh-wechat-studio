@@ -885,6 +885,120 @@ test('回归修复：并发 settings 写锁、损坏保护、style/theme 暴露�
   }
 })
 
+test('check 子命令与 draft push 统一 preflight 契约：标题 32 字阻断、外链不阻断、自定义词与失败 JSON', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'ws-cli-check-'))
+  const tokenKey = ['access', 'token'].join('_')
+  const mpSecFlag = ['--mp', 'app', 'secret'].join('-')
+  const site = ['https:/', 'example.com'].join('/')
+  try {
+    // 1. check --help
+    const helpIo = makeIo()
+    assert.equal(await runCli(['check', '--help'], helpIo), 0)
+    assert.match(helpIo.read().out, /--fail-on-blocking/)
+
+    // 2. 配置公众号凭证与自定义体检词
+    const setIo = makeIo()
+    assert.equal(await runCli([
+      'settings', 'set',
+      '--mp-app-id', 'demo-id',
+      mpSecFlag, 'e5f6'.repeat(8),
+      '--preflight-words', '竞品A,竞品B',
+      '--data-dir', dir,
+      '--json',
+    ], setIo), 0)
+    assert.deepEqual(JSON.parse(setIo.read().out).settings.preflightWords, ['竞品A', '竞品B'])
+
+    // 3. 含外链 + 合规词 + 自定义词 + 文字墙（无阻断项）：check --fail-on-blocking 仍返回 0，draft push 直接成功
+    const warnMd = join(dir, 'sponsored.md')
+    await writeFile(
+      warnMd,
+      `# 商单合集实测\n\n看看 [官网](${site}/p) 和 ${site}/q，支持转发抽奖，顺便提一下竞品A。\n\n${'长'.repeat(165)}\n`,
+      'utf8',
+    )
+    const checkWarnIo = makeIo()
+    assert.equal(await runCli(['check', warnMd, '--fail-on-blocking', '--data-dir', dir, '--json'], checkWarnIo), 0)
+    const checkWarnRes = JSON.parse(checkWarnIo.read().out)
+    assert.equal(checkWarnRes.ok, true)
+    assert.equal(checkWarnRes.passed, true)
+    assert.equal(checkWarnRes.counts.blocking, 0)
+    assert.ok(checkWarnRes.counts.warn >= 4)
+    assert.ok(checkWarnRes.items.some(i => i.id === 'external-link'))
+    assert.ok(checkWarnRes.items.some(i => i.id === 'custom-banned-word'))
+
+    const dryWarnIo = makeIo()
+    assert.equal(await runCli(['draft', 'push', warnMd, '--dry-run', '--data-dir', dir, '--json'], dryWarnIo), 0)
+    const dryWarnRes = JSON.parse(dryWarnIo.read().out)
+    assert.equal(dryWarnRes.preflight.ok, true)
+    assert.equal(dryWarnRes.preflight.stats.links, 2)
+
+    const pushWarnIo = makeIo({
+      fetchImpl: async url => {
+        const u = String(url)
+        if (u.includes('/cgi-bin/token')) return Response.json({ [tokenKey]: 'mock-w' })
+        if (u.includes('/cgi-bin/material/add_material')) return Response.json({ media_id: 'thumb-w' })
+        if (u.includes('/cgi-bin/draft/add')) return Response.json({ media_id: 'draft-w' })
+        throw new Error(`unexpected url: ${u}`)
+      },
+    })
+    assert.equal(await runCli(['draft', 'push', warnMd, '--data-dir', dir, '--json'], pushWarnIo), 0)
+    const pushWarnRes = JSON.parse(pushWarnIo.read().out)
+    assert.equal(pushWarnRes.ok, true)
+    assert.equal(pushWarnRes.mediaId, 'draft-w')
+    assert.deepEqual(pushWarnRes.preflight.counts, dryWarnRes.preflight.counts)
+
+    // 4. 33 字超长标题：check --fail-on-blocking 返回退出码 1 与完整结构化 JSON；draft push 拦截（0 请求），--title 覆盖或 --force 放行
+    const longTitleMd = join(dir, 'long-title.md')
+    await writeFile(longTitleMd, `# ${'标'.repeat(33)}\n\n正文内容。\n`, 'utf8')
+
+    const checkBlockIo = makeIo()
+    assert.equal(await runCli(['check', longTitleMd, '--fail-on-blocking', '--data-dir', dir, '--json'], checkBlockIo), 1)
+    const checkBlockRes = JSON.parse(checkBlockIo.read().out)
+    assert.equal(checkBlockRes.ok, false)
+    assert.equal(checkBlockRes.code, 'PREFLIGHT_BLOCKED')
+    assert.equal(checkBlockRes.passed, false)
+    assert.equal(checkBlockRes.counts.blocking, 1)
+    assert.ok(Array.isArray(checkBlockRes.items) && checkBlockRes.items[0].id === 'title-too-long')
+
+    let fetchCount = 0
+    const blockedTitleIo = makeIo({ fetchImpl: async () => { fetchCount += 1; return Response.json({}) } })
+    assert.equal(await runCli(['draft', 'push', longTitleMd, '--data-dir', dir, '--json'], blockedTitleIo), 2)
+    assert.equal(fetchCount, 0)
+
+    const overrideTitleIo = makeIo({
+      fetchImpl: async url => {
+        const u = String(url)
+        if (u.includes('/cgi-bin/token')) return Response.json({ [tokenKey]: 'mock-t' })
+        if (u.includes('/cgi-bin/material/add_material')) return Response.json({ media_id: 'thumb-t' })
+        if (u.includes('/cgi-bin/draft/add')) return Response.json({ media_id: 'draft-t' })
+        throw new Error(`unexpected url: ${u}`)
+      },
+    })
+    assert.equal(await runCli(['draft', 'push', longTitleMd, '--title', '合规短标题', '--data-dir', dir, '--json'], overrideTitleIo), 0)
+    assert.equal(JSON.parse(overrideTitleIo.read().out).mediaId, 'draft-t')
+
+    const forceTitleIo = makeIo({
+      fetchImpl: async url => {
+        const u = String(url)
+        if (u.includes('/cgi-bin/token')) return Response.json({ [tokenKey]: 'mock-ft' })
+        if (u.includes('/cgi-bin/material/add_material')) return Response.json({ media_id: 'thumb-ft' })
+        if (u.includes('/cgi-bin/draft/add')) return Response.json({ media_id: 'draft-ft' })
+        throw new Error(`unexpected url: ${u}`)
+      },
+    })
+    assert.equal(await runCli(['draft', 'push', longTitleMd, '--force', '--data-dir', dir, '--json'], forceTitleIo), 0)
+    assert.ok(JSON.parse(forceTitleIo.read().out).warnings.some(w => w.includes('32 字上限')))
+
+    // 5. 清空自定义词后不再命中
+    const clearIo = makeIo()
+    assert.equal(await runCli(['settings', 'set', '--preflight-words', '', '--data-dir', dir, '--json'], clearIo), 0)
+    const afterClearIo = makeIo()
+    assert.equal(await runCli(['check', warnMd, '--data-dir', dir, '--json'], afterClearIo), 0)
+    assert.ok(!JSON.parse(afterClearIo.read().out).items.some(i => i.id === 'custom-banned-word'))
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 test('可执行入口 bin/wechat-studio.js 真实子进程冒烟测试', async () => {
   const pkg = JSON.parse(await readFile(join(ROOT, 'package.json'), 'utf8'))
   const { stdout } = await execFileAsync(process.execPath, [BIN_PATH, '--version', '--json'])

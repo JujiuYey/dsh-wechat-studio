@@ -18,6 +18,7 @@ import { COVER_STYLES } from './cover-styles.js'
 import { STYLES, THEMES, detectionText, renderLayout, resolveLayoutPreferences } from './layout.js'
 import { applyRule, buildInsights, EXPERIMENT_RESULTS, importData, INSIGHTS_EMPTY, previewRule } from './insights.js'
 import { Pipeline } from './pipeline.js'
+import { runPreflight } from './preflight.js'
 import { pdfToText } from './report.js'
 import { publicSettings, readSettings, updateSettings } from './settings.js'
 import { scheduleTime as parseScheduleTime } from './schedule-time.js'
@@ -380,6 +381,7 @@ function view(article, pipeline, store, inlineStyles = [], inlineStyleWarnings =
     inlineDiagramMessage: article.inlineMessage ?? null,
     inlineDiagramStyles: inlineStyles,
     inlineDiagramStyleWarnings: inlineStyleWarnings,
+    preflight: runPreflight({ title: article.title, blocks: article.blocks }, { fixedLines: settings.fixedLines, customWords: settings.preflightWords }),
   }
 }
 

@@ -676,3 +676,50 @@ test('稿件分片损坏时 state 返回 storageProblems', async () => {
   await route(deps, req, { setHeader() {}, end(value) { result = JSON.parse(value) } })
   assert.deepEqual(result.storageProblems, ['稿件 a_x 已损坏，已改名保留，未加载'])
 })
+
+test('state 返回实时 preflight 结果，保存自定义提醒词后立即生效', async () => {
+  const { route } = await import('../src/host.js')
+  const store = new Store(mkdtempSync(join(tmpdir(), 'ws-preflight-host-')))
+  const longTitle = '一'.repeat(33)
+  const link = ['https:', '', 'example.com', 'promo'].join('/')
+  const article = createArticle({
+    markdown: `# ${longTitle}\n\n正文里有外链 ${link} 和秘密代号需要复核。`,
+  })
+  await store.update(state => {
+    state.articles.push(article)
+    state.currentId = article.id
+  })
+  const deps = { ctx: { get: () => null }, store, pipeline: { job: () => null } }
+  async function request(path, payload) {
+    const req = {
+      url: '/wechat-studio/' + path,
+      method: payload ? 'POST' : 'GET',
+      async *[Symbol.asyncIterator]() { if (payload) yield Buffer.from(JSON.stringify(payload)) },
+    }
+    let result
+    await route(deps, req, { setHeader() {}, end(value) { result = JSON.parse(value) } })
+    return result
+  }
+
+  const before = await request('state')
+  const pf1 = before.current.preflight
+  assert.equal(pf1.ok, false)
+  assert.equal(pf1.counts.blocking, 1)
+  const titleItem = pf1.items.find(item => item.id === 'title-too-long')
+  assert.ok(titleItem)
+  assert.equal(titleItem.blockId, null)
+  const linkItem = pf1.items.find(item => item.id === 'external-link')
+  assert.ok(linkItem)
+  assert.equal(linkItem.severity, 'warn')
+  assert.equal(linkItem.blockId, article.blocks[0].id)
+  assert.equal(pf1.items.some(item => item.id === 'custom-banned-word'), false)
+
+  const saved = await request('settings', { preflightWords: ['秘密代号', '  秘密代号  '] })
+  assert.deepEqual(saved.preflightWords, ['秘密代号'])
+
+  const after = await request('state')
+  const customItem = after.current.preflight.items.find(item => item.id === 'custom-banned-word')
+  assert.ok(customItem)
+  assert.equal(customItem.severity, 'warn')
+  assert.equal(customItem.blockId, article.blocks[0].id)
+})

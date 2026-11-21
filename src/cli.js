@@ -12,6 +12,7 @@ import { COVER_STYLES } from './cover-styles.js'
 import { coverPrompt, generateArkCover, generateBailianCover, readCover, saveCover } from './cover.js'
 import { buildInsights, importData, INSIGHTS_EMPTY } from './insights.js'
 import { checkBanner, detectionText, renderLayout, renderSvgCard, renderWechatHtml, resolveLayoutPreferences, STYLES, SVG_CARD_KINDS, THEMES } from './layout.js'
+import { MAX_WECHAT_TITLE, runPreflight } from './preflight.js'
 import { publicSettings, readSettings, updateSettings } from './settings.js'
 import { dshHome, JsonStore, Store } from './store.js'
 import { pushWechatDraft, verifyCredentials } from './wechat.js'
@@ -52,7 +53,7 @@ const VALUE_FLAGS = new Set([
   '--prompt-file', '--note', '--topic', '--model', '--base-url',
   '--author', '--slogan', '--cover-provider', '--ark-model', '--bailian-model', '--portrait-url',
   '--zhuque-key', '--zhuque-endpoint', '--ark-key', '--bailian-key',
-  '--mp-name', '--mp-app-id', '--mp-app-secret', '--from-json',
+  '--mp-name', '--mp-app-id', '--mp-app-secret', '--from-json', '--preflight-words',
   '--app-id', '--app-secret', '--cover', '--avatar',
 ])
 
@@ -62,12 +63,13 @@ const HELP_TEXT = `wechat-studio v${VERSION} — 微信公众号成稿台 CLI（
   wechat-studio <command> [options]
 
 子命令:
+  check <file.md|->              零成本发布防踩坑体检（媒体/占位/标题/商单外链/文字墙/合规词）
   layout <file.md|->             将 Markdown 排成公众号 HTML 页面
   svg-card <kind>                渲染单张公众号 SMIL 动画 SVG 卡片
   detect <file.md|->             调用朱雀文本检测并定位标红段落
   cover [file.md|-]              生成 2.35:1 公众号封面（支持 --prompt-only / --prompt-file）
   draft <push|verify>            校验公众号凭证或将排版后的文章推送到草稿箱
-  settings <get|set>             查看或更新工作区配置（作者/标语/默认排版/凭证）
+  settings <get|set>             查看或更新工作区配置（作者/标语/默认排版/体检词/凭证）
   skills                         查看当前工作区生效的技能文件路径（内置或个人覆盖）
   articles <list|get|import>     管理工作区稿件（与 DSH 插件实时共享）
   insights <import|summary>      导入公众号后台数据或输出复盘指标
@@ -169,7 +171,16 @@ const SUB_HELP = {
                                        保存对应服务密钥（传空字符串清除）
   --mp-name / --mp-app-id / --mp-app-secret <val>
                                        保存公众号名称、AppID、AppSecret
+  --preflight-words <词1,词2>          发布体检自定义提醒词（逗号分隔，传空字符串清空）
   --from-json <file|->                 从 JSON 文件或 stdin 批量读取配置补丁（适合传密钥）`,
+
+  check: `用法: wechat-studio check <file.md|-> [options]
+说明: 零模型成本、确定性的发布防踩坑体检（外链/文字墙/合规词仅提醒，绝不阻断发布）。
+选项:
+  --title <text>                       覆盖待检查的标题（默认取 Markdown 一级标题）
+  --fail-on-blocking                   存在阻断项（媒体/占位/空标题/超 32 字标题）时以退出码 1 结束
+  --data-dir <path>                    指定工作区目录（读取 fixedLines 与 preflightWords）
+  --json                               输出单行结构化 JSON`,
 
   draft: `用法: wechat-studio draft <push|verify> [options]
 子命令:
@@ -185,8 +196,8 @@ push 选项:
   --avatar <https://...>               关注卡/横幅头像地址（留空使用首字徽章）
   --cover <file.png|jpg>               本地封面图（留空自动上传纯色占位图并提示）
   --app-id <id> / --app-secret <sec>   临时覆盖公众号凭证（也支持环境变量 WECHAT_APP_ID / WECHAT_APP_SECRET）
-  --dry-run                            仅在本地完成排版与自查，不调用微信接口
-  --force                              忽略阻断级预检问题（本地图片、飞书临时链接、稿件占位）强制推送`,
+  --dry-run                            仅在本地完成排版与完整体检，不调用微信接口
+  --force                              忽略阻断级预检问题（本地图/飞书图/占位/标题超长等）强制推送`,
 }
 
 function scrubSecrets(text, secrets = []) {
@@ -793,6 +804,7 @@ function formatSettingsSummary(pub) {
     `封面提供方：${pub.coverProvider}（ark=${pub.arkModel}，bailian=${pub.bailianModel}）`,
     `参考图：${pub.portraitUrl || '(未设置)'}`,
     `朱雀质检：${pub.zhuqueKeySet ? `已配置（****${pub.zhuqueKeyTail}）` : '未配置'}`,
+    `体检自定义词：${pub.preflightWords?.length ? `${pub.preflightWords.length} 个（${pub.preflightWords.slice(0, 5).join('、')}）` : '未配置'}`,
     `生图密钥：火山方舟 ${pub.arkKeySet ? '已配置' : '未配置'} / 百炼 ${pub.bailianKeySet ? '已配置' : '未配置'}`,
     `公众号草稿箱：${pub.mp.appId ? `${pub.mp.name ? `${pub.mp.name} · ` : ''}${pub.mp.appId}（AppSecret ${pub.mp.appSecretSet ? '已配置' : '未配置'}）` : '未配置'}`,
   ].join('\n')
@@ -829,6 +841,7 @@ async function handleSettings(argv, io, secrets) {
       'mp-name': { type: 'string' },
       'mp-app-id': { type: 'string' },
       'mp-app-secret': { type: 'string' },
+      'preflight-words': { type: 'string' },
       'from-json': { type: 'string' },
     })
     if (values.help) return emitSuccess(io, values.json, { help: SUB_HELP.settings }, SUB_HELP.settings)
@@ -862,6 +875,11 @@ async function handleSettings(argv, io, secrets) {
     if (values['zhuque-endpoint'] !== undefined) patch.zhuqueEndpoint = values['zhuque-endpoint']
     if (values['ark-key'] !== undefined) patch.arkKey = values['ark-key']
     if (values['bailian-key'] !== undefined) patch.bailianKey = values['bailian-key']
+    if (values['preflight-words'] !== undefined) {
+      patch.preflightWords = values['preflight-words'].trim()
+        ? values['preflight-words'].split(/[,，\n]/).map(s => s.trim()).filter(Boolean)
+        : []
+    }
     if (values['mp-name'] !== undefined || values['mp-app-id'] !== undefined || values['mp-app-secret'] !== undefined) {
       patch.mp = { ...(patch.mp ?? {}) }
       if (values['mp-name'] !== undefined) patch.mp.name = values['mp-name']
@@ -988,7 +1006,16 @@ async function handleDraft(argv, io, secrets) {
       avatarUrl: values.avatar?.trim() ?? '',
       name: file === '-' ? '' : basename(file),
     })
-    const title = (values.title ?? '').trim() || rendered.title || '未命名'
+    const title = values.title !== undefined
+      ? values.title.trim()
+      : (rendered.title || '未命名')
+    const preflight = runPreflight(
+      { title, markdown },
+      { fixedLines: settings.fixedLines, customWords: settings.preflightWords, layoutIssues: rendered.issues },
+    )
+    const blockingItems = preflight.items.filter(item => item.severity === 'blocking')
+    const blockingMessages = blockingItems.map(item => item.title)
+    const allIssues = preflight.items.map(item => item.title)
     if (values['dry-run']) {
       const payload = {
         dryRun: true,
@@ -998,24 +1025,15 @@ async function handleDraft(argv, io, secrets) {
         theme,
         chars: rendered.html.length,
         hasCover: Boolean(coverImage),
-        issues: rendered.issues,
-        blocking: rendered.blocking,
+        preflight,
+        issues: allIssues,
+        blocking: blockingMessages,
       }
-      const otherIssues = rendered.issues.filter(item => !rendered.blocking.includes(item))
-      const lines = [`本地预检完成（未推送）：《${title}》（${style} · ${theme}，${rendered.html.length} 字符）`]
-      if (rendered.blocking.length) {
-        lines.push(`发现 ${rendered.blocking.length} 项阻断问题（正式推送将被拦截，修复后重试或加 --force 强制推送）：`, ...rendered.blocking.map(x => `- ${x}`))
-      }
-      if (otherIssues.length) {
-        lines.push('提醒：', ...otherIssues.map(x => `- ${x}`))
-      }
-      if (!rendered.blocking.length && !otherIssues.length) {
-        lines.push('预检通过，未发现问题。')
-      }
-      return emitSuccess(io, values.json, payload, lines.join('\n'))
+      const header = `本地预检完成（未推送）：《${title || '未命名'}》（${style} · ${theme}，${rendered.html.length} 字符）`
+      return emitSuccess(io, values.json, payload, `${header}\n${formatPreflightText(preflight)}`)
     }
-    if (rendered.blocking.length && !values.force) {
-      throw new UsageError(`发布前预检发现阻断项，已阻止推送（确认继续请加 --force）：${rendered.blocking.join('；')}`)
+    if (blockingItems.length && !values.force) {
+      throw new UsageError(`发布前预检发现阻断项，已阻止推送（确认继续请加 --force）：${blockingMessages.join('；')}`)
     }
     const appId = String(values['app-id'] ?? io.env[ENV_WECHAT_APP_ID] ?? settings.mp.appId ?? '').trim()
     const appSecret = String(values['app-secret'] ?? io.env[ENV_WECHAT_APP_SECRET] ?? settings.mp.appSecret ?? '').trim()
@@ -1024,7 +1042,7 @@ async function handleDraft(argv, io, secrets) {
       throw new UsageError(`缺少公众号 AppID 或 AppSecret，请通过 --app-id/--app-secret、环境变量 ${ENV_WECHAT_APP_ID}/${ENV_WECHAT_APP_SECRET} 或 wechat-studio settings set 配置。`)
     }
     const result = await pushWechatDraft({
-      article: { title },
+      article: { title: title || '未命名' },
       html: rendered.html,
       settings: {
         ...settings,
@@ -1034,6 +1052,10 @@ async function handleDraft(argv, io, secrets) {
       cover: coverImage,
       fetchImpl: io.fetchImpl,
     })
+    const warnings = [...result.warnings]
+    if (values.force && title.length > MAX_WECHAT_TITLE) {
+      warnings.push(`标题共 ${title.length} 字，超过 ${MAX_WECHAT_TITLE} 字上限，公众号草稿箱已截断为前 ${MAX_WECHAT_TITLE} 字。`)
+    }
     const payload = {
       mediaId: result.mediaId,
       title,
@@ -1041,14 +1063,83 @@ async function handleDraft(argv, io, secrets) {
       style,
       theme,
       chars: rendered.html.length,
-      issues: rendered.issues,
-      warnings: result.warnings,
+      preflight,
+      issues: allIssues,
+      warnings,
     }
-    const allNotices = [...rendered.issues, ...result.warnings]
+    const allNotices = [...allIssues, ...warnings]
     const warnText = allNotices.length ? `\n提醒：\n- ${allNotices.join('\n- ')}` : ''
-    return emitSuccess(io, values.json, payload, `已推送到公众号草稿箱：${result.mediaId}（《${title}》）${warnText}`)
+    return emitSuccess(io, values.json, payload, `已推送到公众号草稿箱：${result.mediaId}（《${title || '未命名'}》）${warnText}`)
   }
   throw new UsageError(`未知的 draft 子命令：${action}（支持 push、verify）`)
+}
+
+function formatPreflightText(preflight) {
+  const blocking = preflight.items.filter(item => item.severity === 'blocking')
+  const warns = preflight.items.filter(item => item.severity === 'warn')
+  const infos = preflight.items.filter(item => item.severity === 'info')
+  const lines = [
+    `统计：正文 ${preflight.stats.chars} 字，标题 ${preflight.stats.titleChars} 字，链接 ${preflight.stats.links} 处，图片 ${preflight.stats.images} 张`,
+  ]
+  if (blocking.length) {
+    lines.push(`发现 ${blocking.length} 项阻断问题（正式推送将被拦截，修复后重试或加 --force 强制推送）：`, ...blocking.map(x => `- ${x.title}`))
+  }
+  if (warns.length) {
+    lines.push(`发现 ${warns.length} 项提醒（不阻止发布）：`, ...warns.map(x => `- ${x.title}`))
+  }
+  if (infos.length) {
+    lines.push('可读性提示：', ...infos.map(x => `- ${x.title}`))
+  }
+  if (!blocking.length && !warns.length && !infos.length) {
+    lines.push('预检通过，未发现问题。')
+  }
+  return lines.join('\n')
+}
+
+async function handleCheck(argv, io) {
+  const { values, positionals } = parseSubcommandArgs(argv, {
+    title: { type: 'string' },
+    'fail-on-blocking': { type: 'boolean', default: false },
+  })
+  if (values.help) return emitSuccess(io, values.json, { help: SUB_HELP.check }, SUB_HELP.check)
+  const usage = '用法：wechat-studio check <file.md|-> [--title <标题>] [--fail-on-blocking] [--data-dir <path>] [--json]'
+  assertPositionals(positionals, 1, usage)
+  const file = positionals[0]
+  if (!file) throw new UsageError(usage)
+  const dataDir = resolveDataDir(values, io.env)
+  const [markdown, settings] = await Promise.all([
+    readTextFile(file, 'Markdown 文件', io),
+    readSettings(dataDir),
+  ])
+  if (!markdown.trim()) throw new UsageError('Markdown 文件为空。')
+  const parsed = splitMarkdown(markdown)
+  const title = values.title !== undefined ? values.title.trim() : parsed.title
+  const preflight = runPreflight(
+    { title, markdown },
+    { fixedLines: settings.fixedLines, customWords: settings.preflightWords },
+  )
+  const human = formatPreflightText(preflight)
+  if (values['fail-on-blocking'] && !preflight.ok) {
+    if (values.json) {
+      writeLine(io.stdout, JSON.stringify({
+        ok: false,
+        code: 'PREFLIGHT_BLOCKED',
+        passed: false,
+        counts: preflight.counts,
+        stats: preflight.stats,
+        items: preflight.items,
+      }))
+    } else {
+      writeLine(io.stderr, human)
+    }
+    return 1
+  }
+  return emitSuccess(io, values.json, {
+    passed: preflight.ok,
+    counts: preflight.counts,
+    stats: preflight.stats,
+    items: preflight.items,
+  }, human)
 }
 
 export async function runCli(argv = [], rawIo = {}) {
@@ -1074,6 +1165,7 @@ export async function runCli(argv = [], rawIo = {}) {
     const { command, index } = found
     const subArgv = [...argv.slice(0, index), ...argv.slice(index + 1)]
     switch (command) {
+      case 'check': return await handleCheck(subArgv, io)
       case 'layout': return await handleLayout(subArgv, io)
       case 'svg-card': return await handleSvgCard(subArgv, io)
       case 'skills': return await handleSkills(subArgv, io)

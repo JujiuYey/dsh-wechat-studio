@@ -145,6 +145,8 @@ dsh plugin --profile desktop remove dsh-wechat-studio
 
 通过 API 在线检测，或导入朱雀 PDF 报告。待处理段落会出现在纸边批注和右侧队列里，点一下就能定位；支持单段改写和批量处理，每处修改都能看差异、保留原文或恢复上一版。
 
+同页上方内置零成本的**「发布防踩坑体检」**：本地即时检查飞书临时图、本地/base64 图、未填占位与超 32 字标题等阻断项，并对商单外链、手机端文字墙、视觉节奏、诱导分享/极限词以及你在「设置 → 发布体检」中配置的自定义词给出提醒（点击条目可定位到段落；风险词检查仅供人工复核，不代表微信官方审核结论）。
+
 ### 03 · 视觉
 
 **封面、插图、动画卡，最后进入同一套排版。**
@@ -232,6 +234,7 @@ npm install -g dsh-wechat-studio
 | 子命令 | 作用 | 常用示例 |
 | --- | --- | --- |
 | `skills` | 查看当前生效的技能路径（个人覆盖或内置） | `wechat-studio skills --json` |
+| `check` | 零成本发布防踩坑体检（媒体/占位/32 字标题阻断；商单外链/文字墙/合规词仅提醒不阻断） | `wechat-studio check article.md --json` |
 | `layout` | 将 Markdown 排成公众号 HTML（支持横幅与关注卡） | `wechat-studio layout article.md --style neo --theme forest --banner banner.json --follow-card --out preview.html --json` |
 | `svg-card` | 渲染单张公众号 SMIL 动画 SVG 卡片 | `wechat-studio svg-card svg-steps --title "写作流程" --line "收集素材" --line "起草改稿" --out card.html --json` |
 | `detect` | 调用朱雀文本检测并定位标红段落 | `wechat-studio detect article.md --json` |

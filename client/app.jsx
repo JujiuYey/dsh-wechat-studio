@@ -1149,7 +1149,60 @@ function ArticleInfoPane({ article }) {
   </section>
 }
 
-function QualityPane({ article, ready, reviewTarget, onReviewJump }) {
+const PREFLIGHT_SEV_LABELS = { blocking: '阻断', warn: '提醒', info: '提示' }
+
+function PreflightPane({ preflight, unsavedCount, onReviewJump }) {
+  if (!preflight) return null
+  const { counts, stats, items, ok } = preflight
+  const clean = ok && counts.warn === 0 && counts.info === 0
+  return (
+    <section className="ws-sec ws-preflight" aria-label="发布防踩坑体检">
+      <div className="ws-sec-head">
+        <h2 className="ws-pane-title">发布防踩坑体检</h2>
+        <span className="ws-preflight-badge">本地即时 · 零成本</span>
+      </div>
+      {unsavedCount > 0 ? (
+        <p className="ws-preflight-unsaved ws-small" role="status">有 {unsavedCount} 段未保存，保存后更新体检结果。</p>
+      ) : null}
+      {clean ? (
+        <p className="ws-preflight-pass"><Icon name="check" size={14} />未发现明显发布风险（标题 {stats.titleChars} 字 · 正文 {stats.chars} 字）</p>
+      ) : (
+        <div className="ws-preflight-summary">
+          {counts.blocking > 0 ? <span className="ws-preflight-pill is-blocking">阻断 {counts.blocking}</span> : null}
+          {counts.warn > 0 ? <span className="ws-preflight-pill is-warn">提醒 {counts.warn}</span> : null}
+          {counts.info > 0 ? <span className="ws-preflight-pill is-info">提示 {counts.info}</span> : null}
+          <span className="ws-muted ws-small">标题 {stats.titleChars} 字 · 正文 {stats.chars} 字</span>
+        </div>
+      )}
+      {items.length ? (
+        <div className="ws-preflight-list">
+          {items.map((item, idx) => {
+            const key = `${item.id}-${item.blockId ?? 'title'}-${idx}`
+            const body = <>
+              <span className="ws-preflight-item-head">
+                <span className={`ws-preflight-sev is-${item.severity}`}>{PREFLIGHT_SEV_LABELS[item.severity] ?? item.severity}</span>
+                <strong>{item.title}</strong>
+                {item.blockNumber != null ? <span className="ws-muted">第 {item.blockNumber} 段</span> : null}
+              </span>
+              <span className="ws-preflight-detail">{item.detail}</span>
+            </>
+            return item.blockId ? (
+              <button key={key} type="button" className={`ws-preflight-item is-${item.severity}`} onClick={() => onReviewJump(item.blockId, true)}>{body}</button>
+            ) : (
+              <div key={key} className={`ws-preflight-item is-static is-${item.severity}`}>{body}</div>
+            )
+          })}
+        </div>
+      ) : null}
+      <div className="ws-preflight-foot">
+        <button type="button" className="ws-link" onClick={() => setState({ dialog: 'settings', settingsPage: 'preflight' })}>自定义提醒词</button>
+        <p className="ws-muted ws-small">风险词检查仅供人工复核，不代表微信官方审核结论。</p>
+      </div>
+    </section>
+  )
+}
+
+function QualityPane({ article, ready, reviewTarget, onReviewJump, unsavedCount }) {
   const fileRef = React.useRef(null)
   const [over, setOver] = React.useState(false)
   const busy = Boolean(article.job)
@@ -1164,42 +1217,45 @@ function QualityPane({ article, ready, reviewTarget, onReviewJump }) {
     if (!busy) uploadReport(event.dataTransfer.files?.[0])
   }
   return (
-    <section className="ws-sec">
-      <h2 className="ws-pane-title">朱雀质检{zhuque.round ? <span className="ws-round">第 {zhuque.round} 轮</span> : null}</h2>
-      {ready ? (
-        <button type="button" className="ws-btn is-primary is-wide" disabled={busy || !article.blocks.length} onClick={() => act('zhuque/detect')}>
-          <Icon name="scan" />{article.job?.kind === 'report' ? '正在检测…' : zhuque.round ? '再检测一轮' : '一键检测'}
-        </button>
-      ) : (
-        <p className="ws-hint">设置朱雀 API Key 后可以一键检测，不用来回复制和下载。<button type="button" className="ws-link" onClick={() => setState({ dialog: 'settings' })}>去设置</button></p>
-      )}
-      {overall?.length ? <p className="ws-overall">{overall.map(([name, value]) => <span key={name}>{name} {value}%</span>)}</p> : null}
-      {zhuque.round ? <p className="ws-muted ws-small">{metricNote}</p> : null}
-      <FixAll article={article} />
-      <ReviewQueue article={article} target={reviewTarget} onJump={id => onReviewJump(id, true)} />
-      <details className="ws-manual" open={!ready}>
-        <summary>{ready ? '更多检测方式 · 上传 PDF' : '手动上传报告'}</summary>
-        <ol className="ws-steps">
-          <li><button type="button" className="ws-btn is-wide" disabled={!article.blocks.length} onClick={copyDetectionText}><Icon name="doc" />复制检测文本</button></li>
-          <li className="ws-muted">到朱雀贴进去检测，下载报告 PDF</li>
-          <li>
-            <button type="button" className={`ws-drop ${over ? 'is-over' : ''}`} disabled={busy || !article.blocks.length}
-              onClick={() => fileRef.current?.click()} onDragOver={e => { e.preventDefault(); setOver(true) }} onDragLeave={() => setOver(false)} onDrop={drop}>
-              <Icon name="upload" />把报告 PDF 拖到这里，或点击选择
-            </button>
-            <input ref={fileRef} type="file" accept="application/pdf,.pdf" hidden onChange={e => { uploadReport(e.target.files?.[0]); e.target.value = '' }} />
-          </li>
-        </ol>
-      </details>
-      <p className="ws-muted ws-small">不保证具体分数，结果以朱雀为准。</p>
-    </section>
+    <>
+      <PreflightPane preflight={article.preflight} unsavedCount={unsavedCount} onReviewJump={onReviewJump} />
+      <section className="ws-sec ws-quality-ai">
+        <h2 className="ws-pane-title">AI 味检测（朱雀）{zhuque.round ? <span className="ws-round">第 {zhuque.round} 轮</span> : null}</h2>
+        {ready ? (
+          <button type="button" className="ws-btn is-primary is-wide" disabled={busy || !article.blocks.length} onClick={() => act('zhuque/detect')}>
+            <Icon name="scan" />{article.job?.kind === 'report' ? '正在检测…' : zhuque.round ? '再检测一轮' : '一键检测'}
+          </button>
+        ) : (
+          <p className="ws-hint">设置朱雀 API Key 后可以一键检测，不用来回复制和下载。<button type="button" className="ws-link" onClick={() => setState({ dialog: 'settings', settingsPage: 'quality' })}>去设置</button></p>
+        )}
+        {overall?.length ? <p className="ws-overall">{overall.map(([name, value]) => <span key={name}>{name} {value}%</span>)}</p> : null}
+        {zhuque.round ? <p className="ws-muted ws-small">{metricNote}</p> : null}
+        <FixAll article={article} />
+        <ReviewQueue article={article} target={reviewTarget} onJump={id => onReviewJump(id, true)} />
+        <details className="ws-manual" open={!ready}>
+          <summary>{ready ? '更多检测方式 · 上传 PDF' : '手动上传报告'}</summary>
+          <ol className="ws-steps">
+            <li><button type="button" className="ws-btn is-wide" disabled={!article.blocks.length} onClick={copyDetectionText}><Icon name="doc" />复制检测文本</button></li>
+            <li className="ws-muted">到朱雀贴进去检测，下载报告 PDF</li>
+            <li>
+              <button type="button" className={`ws-drop ${over ? 'is-over' : ''}`} disabled={busy || !article.blocks.length}
+                onClick={() => fileRef.current?.click()} onDragOver={e => { e.preventDefault(); setOver(true) }} onDragLeave={() => setOver(false)} onDrop={drop}>
+                <Icon name="upload" />把报告 PDF 拖到这里，或点击选择
+              </button>
+              <input ref={fileRef} type="file" accept="application/pdf,.pdf" hidden onChange={e => { uploadReport(e.target.files?.[0]); e.target.value = '' }} />
+            </li>
+          </ol>
+        </details>
+        <p className="ws-muted ws-small">不保证具体分数，结果以朱雀为准。</p>
+      </section>
+    </>
   )
 }
 
 const SIDE_TABS = [['article', '文章'], ['images', '配图'], ['quality', '质检']]
 
 function SidePane({ article, tab, onTab, tabId, flagged, retest, ready, reviewTarget, onReviewJump, cloudinaryReady, unsavedCount }) {
-  const pendingCount = flagged + retest
+  const pendingCount = flagged + retest + (article.preflight?.counts?.blocking ?? 0)
   return <aside className="ws-side" aria-label="稿面工具">
     <div className="ws-side-tabs">
       <div className="ws-tabs" role="tablist" aria-label="稿面工具">
@@ -1224,7 +1280,7 @@ function SidePane({ article, tab, onTab, tabId, flagged, retest, ready, reviewTa
         <CoverPane article={article} />
         <InlineDiagramPane article={article} cloudinaryReady={cloudinaryReady} onReviewJump={onReviewJump} unsavedCount={unsavedCount} />
         <SvgCardsPane article={article} reviewTarget={reviewTarget} unsavedCount={unsavedCount} onReviewJump={onReviewJump} />
-      </> : <QualityPane article={article} ready={ready} reviewTarget={reviewTarget} onReviewJump={onReviewJump} />}
+      </> : <QualityPane article={article} ready={ready} reviewTarget={reviewTarget} onReviewJump={onReviewJump} unsavedCount={unsavedCount} />}
     </div>)}
   </aside>
 }
@@ -1626,6 +1682,7 @@ function SettingsDialog({ onOpenPlugin }) {
   const [key, setKey] = React.useState('')
   const [endpoint, setEndpoint] = React.useState(null)
   const [fixed, setFixed] = React.useState(null)
+  const [preflightWords, setPreflightWords] = React.useState(null)
   const [test, setTest] = React.useState(null)
   const [mp, setMp] = React.useState(null)
   const [mpTest, setMpTest] = React.useState(null)
@@ -1640,13 +1697,16 @@ function SettingsDialog({ onOpenPlugin }) {
     { id: 'cover', title: '封面生成', icon: 'spark', description: isBailian ? '配置阿里云百炼的生图模型和凭证。' : '配置火山方舟的生图模型和凭证。', ready: isBailian ? settings.bailianKeySet : settings.arkKeySet, link: isBailian ? 'https://bailian.console.aliyun.com/cn-beijing/model/settings/api-key' : 'https://ark.volcengine.com/region:cn-beijing/apikey', linkLabel: isBailian ? '阿里云百炼 API Key' : '火山方舟 API Key' },
     { id: 'storage', title: '图片图床', icon: 'upload', description: '将飞书图片自动转存到 Cloudinary，供排版预览使用。', ready: Boolean(settings.cloudinary?.cloudName && settings.cloudinary?.apiKey && settings.cloudinary?.apiSecretSet), link: 'https://console.cloudinary.com/settings/api-keys', linkLabel: 'Cloudinary API Keys' },
     { id: 'quality', title: '朱雀质检', icon: 'scan', description: '管理检测凭证和需要排除的固定文案。', ready: settings.zhuqueKeySet, link: 'https://console.cloud.tencent.com/edgeone', linkLabel: 'EdgeOne 控制台' },
+    { id: 'preflight', title: '发布体检', icon: 'check', description: '配置本地发布防踩坑体检的自定义提醒词（仅提醒，不阻断发布）。' },
     { id: 'mp', title: '公众号凭证', icon: 'send', description: '配置公众号的 AppID 和 AppSecret，用于一键推送排版好的内容到草稿箱。', ready: settings.mp?.appSecretSet, link: 'https://mp.weixin.qq.com/', linkLabel: '公众号后台' },
   ]
   const selected = pages.find(item => item.id === page)
   const endpointValue = endpoint ?? (settings.zhuqueEndpointDefault ? '' : settings.zhuqueEndpoint)
   const fixedValue = fixed ?? settings.fixedLines.join('\n')
+  const preflightWordsValue = preflightWords ?? (settings.preflightWords ?? []).join('\n')
   const patch = () => {
     const out = { zhuqueEndpoint: endpointValue, fixedLines: fixedValue.split('\n') }
+    if (preflightWords !== null) out.preflightWords = preflightWords.split('\n')
     out.brand = brand
     out.coverProvider = providerValue
     out.arkModel = arkModel ?? settings.arkModel
@@ -1838,6 +1898,15 @@ function SettingsDialog({ onOpenPlugin }) {
                 <textarea rows={3} value={fixedValue} onChange={e => setFixed(e.target.value)} />
               </label>
               <p className="ws-muted ws-small">每篇都一样的开头语、结尾引导会和正文混进同一个片段，把分数拉高。</p>
+            </fieldset>
+
+            <fieldset className="ws-group ws-settings-fields" hidden={page !== 'preflight'}>
+              <label className="ws-field"><span>自定义提醒词（每行一个，最多 100 个）</span>
+                <textarea rows={6} value={preflightWordsValue}
+                  placeholder="例如：竞品名、客户禁用词、内部项目代号"
+                  onChange={e => setPreflightWords(e.target.value)} />
+              </label>
+              <p className="ws-muted ws-small">正文命中这些词时会在「发布防踩坑体检」中标出（跳过代码块与固定句），仅提醒不阻断发布。风险词检查仅供人工复核，不代表微信官方审核结论。</p>
             </fieldset>
 
             <fieldset className="ws-group ws-settings-fields" hidden={page !== 'mp'}>

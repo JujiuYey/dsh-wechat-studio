@@ -14,7 +14,7 @@ import { checkEndpoint, DEFAULT_ENDPOINT } from './zhuque.js'
 const DEFAULT_MP = { name: '', appId: '', appSecret: '' }
 
 // 每篇都一样的固定句：检测时整行去掉，避免和正文混进同一个片段把分数拉高
-const DEFAULTS = { fixedLines: ['设为「星标」', '教你用AI干掉90%的重复劳动'], style: null, theme: null, zhuqueKey: '', zhuqueEndpoint: DEFAULT_ENDPOINT, model: { provider: '', model: '' } }
+const DEFAULTS = { fixedLines: ['设为「星标」', '教你用AI干掉90%的重复劳动'], preflightWords: [], style: null, theme: null, zhuqueKey: '', zhuqueEndpoint: DEFAULT_ENDPOINT, model: { provider: '', model: '' } }
 
 const DEFAULT_BRAND = {
   author: '林月半子的AI笔记',
@@ -28,6 +28,21 @@ export const AUTHOR_SAMPLE_PORTRAIT = 'https://r2.cloudnative101.net/assets/imag
 const brandField = (value, limit) => typeof value === 'string' ? value.trim().slice(0, limit) : ''
 
 const lines = value => (Array.isArray(value) ? value.filter(v => typeof v === 'string').map(v => v.trim()).filter(Boolean).slice(0, 20) : null)
+
+const cleanPreflightWords = value => {
+  if (!Array.isArray(value)) return null
+  const out = []
+  const seen = new Set()
+  for (const item of value) {
+    if (typeof item !== 'string') continue
+    const word = item.trim().slice(0, 60)
+    if (!word || seen.has(word)) continue
+    seen.add(word)
+    out.push(word)
+    if (out.length >= 100) break
+  }
+  return out
+}
 
 async function parseSettingsFile(file) {
   let raw
@@ -84,6 +99,7 @@ export async function readSettings(root) {
       apiSecret: typeof saved.cloudinary?.apiSecret === 'string' ? saved.cloudinary.apiSecret : '',
     },
     fixedLines: lines(saved.fixedLines) ?? DEFAULTS.fixedLines,
+    preflightWords: cleanPreflightWords(saved.preflightWords) ?? DEFAULTS.preflightWords,
     zhuqueKey: typeof saved.zhuqueKey === 'string' ? saved.zhuqueKey : '',
     zhuqueEndpoint: typeof saved.zhuqueEndpoint === 'string' && saved.zhuqueEndpoint ? saved.zhuqueEndpoint : DEFAULT_ENDPOINT,
     mp: {
@@ -115,6 +131,7 @@ export async function updateSettings(root, body) {
       else throw Object.assign(new Error(`不支持的配色主题：${body.theme}（可选：${THEMES.join(', ')}）`), { status: 400 })
     }
   if (lines(body.fixedLines)) next.fixedLines = lines(body.fixedLines)
+  if (cleanPreflightWords(body.preflightWords) !== null) next.preflightWords = cleanPreflightWords(body.preflightWords)
   if (typeof body.zhuqueKey === 'string') next.zhuqueKey = body.zhuqueKey.trim().slice(0, 400)
   if (typeof body.zhuqueEndpoint === 'string') next.zhuqueEndpoint = body.zhuqueEndpoint.trim() ? checkEndpoint(body.zhuqueEndpoint.trim()) : DEFAULT_ENDPOINT
   if (body.brand && typeof body.brand === 'object') {
@@ -200,6 +217,7 @@ export function publicSettings(settings) {
     style: settings.style ?? null,
     theme: settings.theme ?? null,
     fixedLines: settings.fixedLines,
+    preflightWords: settings.preflightWords ?? [],
     brand: settings.brand,
     arkModel: settings.arkModel,
     arkKeySet: Boolean(settings.arkKey),

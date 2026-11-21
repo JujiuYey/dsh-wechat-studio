@@ -34,7 +34,11 @@ wechat-studio articles list --json
 wechat-studio articles import article.md --json
 wechat-studio articles get <id> --json
 
-# 4. 朱雀文本检测（需配置环境变量或工作区设置中的朱雀 Key）
+# 4. 零成本发布防踩坑体检（媒体/占位/32字标题阻断；商单外链/文字墙/合规词仅提醒不阻断）
+wechat-studio check article.md --json
+wechat-studio check article.md --fail-on-blocking --json
+
+# 5. 朱雀文本检测（需配置环境变量或工作区设置中的朱雀 Key）
 wechat-studio detect article.md --json
 
 # 5. 个人写作风格（外部 Agent 推荐两步闭环：--prompt-only -> apply）

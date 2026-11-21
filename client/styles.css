@@ -1121,3 +1121,31 @@ body[data-ds-dark-theme] .ws-sched { --sched-warn: #e2b93b; }
 @media (max-width: 640px) {
   .ws-style-grid, .ws-style-raw-grid { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* 发布防踩坑体检 */
+.ws-preflight { display: flex; flex-direction: column; gap: 8px; }
+.ws-preflight-badge { font-size: 11px; padding: 1px 7px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); white-space: nowrap; }
+.ws-preflight-unsaved { padding: 6px 9px; border-radius: var(--r-sm); background: color-mix(in srgb, var(--update) 12%, var(--card)); color: var(--update); border: 1px solid color-mix(in srgb, var(--update) 32%, var(--line)); }
+.ws-preflight-pass { display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-radius: var(--r-sm); background: color-mix(in srgb, var(--ok) 10%, var(--card)); color: var(--ok); font-size: 12px; line-height: 18px; }
+.ws-preflight-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.ws-preflight-pill { font-size: 11px; font-weight: 600; padding: 1px 8px; border-radius: 999px; font-variant-numeric: tabular-nums; }
+.ws-preflight-pill.is-blocking { background: color-mix(in srgb, var(--bad) 14%, var(--card)); color: var(--bad); }
+.ws-preflight-pill.is-warn { background: color-mix(in srgb, var(--update) 14%, var(--card)); color: var(--update); }
+.ws-preflight-pill.is-info { background: var(--hover); color: var(--ink2); }
+.ws-preflight-list { display: grid; gap: 6px; max-height: 280px; overflow: auto; padding: 2px; scrollbar-gutter: stable; }
+.ws-preflight-item { display: grid; gap: 3px; width: 100%; text-align: left; padding: 8px 9px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--card); color: var(--ink); font-size: 12px; line-height: 18px; }
+button.ws-preflight-item:hover { background: var(--hover); border-color: var(--accent); }
+.ws-preflight-item.is-static { cursor: default; }
+.ws-preflight-item.is-blocking { border-left: 3px solid var(--bad); }
+.ws-preflight-item.is-warn { border-left: 3px solid var(--update); }
+.ws-preflight-item.is-info { border-left: 3px solid var(--line); }
+.ws-preflight-item-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.ws-preflight-item-head strong { font-weight: 600; }
+.ws-preflight-sev { font-size: 10px; font-weight: 650; padding: 0 5px; border-radius: 4px; }
+.ws-preflight-sev.is-blocking { background: color-mix(in srgb, var(--bad) 15%, var(--card)); color: var(--bad); }
+.ws-preflight-sev.is-warn { background: color-mix(in srgb, var(--update) 15%, var(--card)); color: var(--update); }
+.ws-preflight-sev.is-info { background: var(--hover); color: var(--ink2); }
+.ws-preflight-detail { color: var(--ink); overflow-wrap: anywhere; }
+.ws-preflight-hint { color: var(--ink2); font-size: 11px; overflow-wrap: anywhere; }
+.ws-preflight-foot { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+.ws-quality-ai { padding-top: 14px; border-top: 1px solid var(--line); }
