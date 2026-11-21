@@ -4,6 +4,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
+import { fileURLToPath } from 'node:url'
 import { parseCommitSubject, renderReleaseNotes, resolveGithubContributors } from '../scripts/release-notes.mjs'
 
 test('parseCommitSubject 正确解析 Conventional Commits 与普通提交', () => {
@@ -74,20 +75,39 @@ test('renderReleaseNotes 存在手写版本说明时优先嵌入，同时保留�
 test('scripts/release-notes.mjs CLI 端到端可执行并生成完整 Release Notes', () => {
   const dir = mkdtempSync(join(tmpdir(), 'ws-release-notes-'))
   try {
+    const script = fileURLToPath(new URL('../scripts/release-notes.mjs', import.meta.url))
     const tarball = join(dir, 'dsh-wechat-studio-0.2.2.tgz')
     const out = join(dir, 'notes.md')
+    const git = (...args) => execFileSync('git', args, { cwd: dir, stdio: 'ignore' })
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({
+      name: 'dsh-wechat-studio',
+      version: '0.2.2',
+      repository: 'lqshow/dsh-wechat-studio',
+      engines: { node: '>=20' },
+    }))
+    git('-c', 'init.defaultBranch=main', 'init', '-q')
+    git('config', 'user.name', 'Release Test')
+    git('config', 'user.email', 'release-test@example.com')
+    git('config', 'commit.gpgsign', 'false')
+    writeFileSync(join(dir, 'article.txt'), 'first release\n')
+    git('add', 'article.txt')
+    git('commit', '-qm', 'feat: first release')
+    git('tag', 'v0.2.1')
+    writeFileSync(join(dir, 'article.txt'), 'second release\n')
+    git('commit', '-qam', 'fix: second release')
+    git('tag', 'v0.2.2')
     writeFileSync(tarball, 'fake-tarball-bytes')
     execFileSync(process.execPath, [
-      'scripts/release-notes.mjs',
+      script,
       '--tag', 'v0.2.2',
       '--prev-tag', 'v0.2.1',
       '--tarball', tarball,
       '--out', out,
-    ], { cwd: process.cwd() })
+    ], { cwd: dir, env: { ...process.env, GH_TOKEN: '', GITHUB_TOKEN: '', GITHUB_REPOSITORY: '' } })
     const content = readFileSync(out, 'utf8')
     assert.match(content, /## Install \/ Update/)
     assert.match(content, /## What's New/)
-    assert.match(content, /## Commits/)
+    assert.match(content, /## Commits\n\n- fix: second release/)
     assert.match(content, /## Package Integrity/)
     assert.match(content, /dsh-wechat-studio-0\.2\.2\.tgz/)
   } finally {
