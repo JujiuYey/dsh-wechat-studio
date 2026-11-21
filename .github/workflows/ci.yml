@@ -52,3 +52,4 @@ jobs:
           mkdir -p artifacts
           npm pack --pack-destination artifacts
           npm run smoke:package
+          npm publish ./artifacts/*.tgz --dry-run --ignore-scripts --access public

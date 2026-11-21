@@ -46,6 +46,7 @@ jobs:
           mkdir -p artifacts
           npm pack --pack-destination artifacts
           npm run smoke:package
+          npm publish ./artifacts/*.tgz --dry-run --ignore-scripts --access public
       - name: Keep the verified release tarball
         if: matrix.os == 'ubuntu-latest' && matrix.node == '22'
         uses: actions/upload-artifact@v4
@@ -79,7 +80,7 @@ jobs:
       - name: Publish the verified tarball
         shell: bash
         run: |
-          packages=(artifacts/*.tgz)
+          packages=(./artifacts/*.tgz)
           [[ ${#packages[@]} -eq 1 && -f "${packages[0]}" ]]
           version=$(node -p 'JSON.parse(require("node:fs").readFileSync("package.json", "utf8")).version')
           # Allow reruns to recover a failed GitHub Release after npm succeeded.
