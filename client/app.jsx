@@ -35,6 +35,7 @@ const ICONS = {
   skills: 'M8 2l5.5 3v6L8 14l-5.5-3V5zM2.5 5L8 8l5.5-3M8 8v6',
   gear: 'M8 5.6a2.4 2.4 0 100 4.8 2.4 2.4 0 000-4.8zM8 1.8v1.7M8 12.5v1.7M1.8 8h1.7M12.5 8h1.7M3.6 3.6l1.2 1.2M11.2 11.2l1.2 1.2M12.4 3.6l-1.2 1.2M4.8 11.2l-1.2 1.2',
   scan: 'M2.5 5.5v-3h3M10.5 2.5h3v3M13.5 10.5v3h-3M5.5 13.5h-3v-3M5 8h6',
+  key: 'M5.5 5a3 3 0 100 6 3 3 0 000-6zM8.5 8h5.5M11.5 8v2.2M14 8v2.2',
   spark: 'M7 2l1.3 3.7L12 7l-3.7 1.3L7 12l-1.3-3.7L2 7l3.7-1.3zM12.5 10.5l.6 1.4 1.4.6-1.4.6-.6 1.4-.6-1.4-1.4-.6 1.4-.6z',
 }
 
@@ -1698,7 +1699,7 @@ function SettingsDialog({ onOpenPlugin }) {
     { id: 'storage', title: '图片图床', icon: 'upload', description: '将飞书图片自动转存到 Cloudinary，供排版预览使用。', ready: Boolean(settings.cloudinary?.cloudName && settings.cloudinary?.apiKey && settings.cloudinary?.apiSecretSet), link: 'https://console.cloudinary.com/settings/api-keys', linkLabel: 'Cloudinary API Keys' },
     { id: 'quality', title: '朱雀质检', icon: 'scan', description: '管理检测凭证和需要排除的固定文案。', ready: settings.zhuqueKeySet, link: 'https://console.cloud.tencent.com/edgeone', linkLabel: 'EdgeOne 控制台' },
     { id: 'preflight', title: '发布体检', icon: 'check', description: '配置本地发布防踩坑体检的自定义提醒词（仅提醒，不阻断发布）。' },
-    { id: 'mp', title: '公众号凭证', icon: 'send', description: '配置公众号的 AppID 和 AppSecret，用于一键推送排版好的内容到草稿箱。', ready: settings.mp?.appSecretSet, link: 'https://mp.weixin.qq.com/', linkLabel: '公众号后台' },
+    { id: 'mp', title: '公众号凭证', icon: 'key', description: '配置公众号的 AppID 和 AppSecret，用于一键推送排版好的内容到草稿箱。', ready: settings.mp?.appSecretSet, link: 'https://developers.weixin.qq.com/platform', linkLabel: '微信开发者平台' },
   ]
   const selected = pages.find(item => item.id === page)
   const endpointValue = endpoint ?? (settings.zhuqueEndpointDefault ? '' : settings.zhuqueEndpoint)
@@ -1924,7 +1925,7 @@ function SettingsDialog({ onOpenPlugin }) {
                   placeholder={settings.mp?.appSecretSet ? '已保存，留空表示不改' : '粘贴 AppSecret'}
                   onChange={e => { setMp({ ...mp, appSecret: e.target.value }); setMpTest(null) }} />
               </label>
-              <p className="ws-muted ws-small">在公众号「设置与开发 → 基本配置」里查看。凭证只存在这台电脑上，推送草稿箱时直接发给微信的接口。如果验证或推送提示 IP 不在白名单，把提示里的 IP 加进「基本配置 → IP 白名单」再试。</p>
+              <p className="ws-muted ws-small">在微信开发者平台「我的业务 → 公众号/服务号 → 基础信息 → 开发密钥」里查看 AppID、AppSecret 和配置 IP 白名单（需管理员或开发者微信扫码登录）。凭证只存在这台电脑上，推送草稿箱时直接发给微信的接口。如果验证或推送提示 IP 不在白名单，把提示里的 IP 加进「开发密钥 → IP 白名单」再试。</p>
               <div className="ws-row-actions">
                 <button type="button" className="ws-btn" disabled={mpTest?.running
                   || (!mp?.appSecret?.trim() && !settings.mp?.appSecretSet)

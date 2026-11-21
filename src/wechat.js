@@ -20,10 +20,10 @@ export function friendlyWechatError(errcode, errmsg) {
   if (errcode === 40164) {
     const ip = detail.match(/invalid ip ([0-9a-fA-F:.]+)/)?.[1]
     return '接口拒绝了请求：本机出口 IP 不在公众号的 IP 白名单里。'
-      + (ip ? `请到 mp.weixin.qq.com「设置与开发 → 基本配置 → IP 白名单」，把这个 IP 加进去再试：${ip}` : '请到「设置与开发 → 基本配置 → IP 白名单」加上提示里的 IP 再试。')
+      + (ip ? `请到微信开发者平台（developers.weixin.qq.com/platform）「我的业务 → 公众号/服务号 → 基础信息 → 开发密钥 → IP 白名单」，把这个 IP 加进去再试：${ip}` : '请到微信开发者平台「我的业务 → 公众号/服务号 → 基础信息 → 开发密钥 → IP 白名单」加上提示里的 IP 再试。')
   }
-  if (errcode === 40013) return 'AppID 不对，请到公众号「设置与开发 → 基本配置」核对开发者 ID。'
-  if (errcode === 40001 || errcode === 40125) return 'AppSecret 不对或者已经重置过，请到公众号「设置与开发 → 基本配置」重新生成并填进来。'
+  if (errcode === 40013) return 'AppID 不对，请到微信开发者平台「我的业务 → 公众号/服务号 → 基础信息」核对开发者 ID。'
+  if (errcode === 40001 || errcode === 40125) return 'AppSecret 不对或者已经重置过，请到微信开发者平台「我的业务 → 公众号/服务号 → 基础信息 → 开发密钥」重新生成并填进来。'
   if (errcode === 40002) return '凭证类型不对，请确认这是公众号（服务号或订阅号）而不是小程序的 AppID。'
   if (errcode === 48001) return '这个公众号没有草稿箱接口权限，未认证的订阅号需要先完成微信认证。'
   return detail ? `微信接口报错（${errcode}）：${detail}` : `微信接口报错（${errcode}）`

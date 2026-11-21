@@ -201,7 +201,7 @@ export async function updateSettings(root, body) {
       if (typeof body.mp[field] === 'string') next.mp[field] = body.mp[field].trim().slice(0, 400)
     }
     if (next.mp.appSecret && !/^[a-f0-9]{32}$/i.test(next.mp.appSecret)) {
-      throw Object.assign(new Error('AppSecret 是 32 位十六进制字符串，请到公众号「设置与开发 → 基本配置」复制完整的一串。'), { status: 400 })
+      throw Object.assign(new Error('AppSecret 是 32 位十六进制字符串，请到微信开发者平台「我的业务 → 公众号/服务号 → 基础信息 → 开发密钥」复制完整的一串。'), { status: 400 })
     }
   }
     await mkdir(root, { recursive: true })
