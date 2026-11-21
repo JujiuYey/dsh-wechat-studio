@@ -1,5 +1,5 @@
 // JSON 文件的可靠读写：先 fsync 临时文件再替换，并保留上一版；读坏文件时回退备份或隔离，绝不当成空文件。
-import { open, readFile, rename } from 'node:fs/promises'
+import { access, open, readFile, rename } from 'node:fs/promises'
 
 export async function writeJsonAtomic(file, value, { indent = 1 } = {}) {
   const tmp = `${file}.${process.pid}.tmp`
@@ -11,7 +11,10 @@ export async function writeJsonAtomic(file, value, { indent = 1 } = {}) {
     await handle.close()
   }
   // 两次 rename 之间主文件短暂不存在，读取方会落到 .bak，因此任何时刻至少有一份完整数据。
-  await rename(file, `${file}.bak`).catch(err => { if (err.code !== 'ENOENT') throw err })
+  // 先确认主文件存在再备份，兼容部分 Agent 沙箱 FS shim 将不存在源文件的 rename ENOENT 错映射为 EIO。
+  if (await access(file).then(() => true, () => false)) {
+    await rename(file, `${file}.bak`).catch(err => { if (err.code !== 'ENOENT') throw err })
+  }
   await rename(tmp, file)
 }
 

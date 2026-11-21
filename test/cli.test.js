@@ -618,6 +618,37 @@ test('多进程共享存储、growth-only hasData 与稳定 RUNTIME 错误码', 
   }
 })
 
+test('layout --banner：合法横幅规格渲染进 HTML，非法规格返回退出码 2', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'ws-cli-banner-'))
+  try {
+    const mdPath = join(dir, 'post.md')
+    const bannerPath = join(dir, 'banner.json')
+    const badBannerPath = join(dir, 'bad-banner.json')
+    const outHtml = join(dir, 'with-banner.html')
+    await writeFile(mdPath, '# 带横幅的文章\n\n正文内容。\n', 'utf8')
+    await writeFile(bannerPath, JSON.stringify({
+      slug: 'x',
+      title: '带横幅的文章',
+      style: 'poster',
+      poster: { eyebrow: 'AI 实测', title1: '排版这件事', title2: '交给流程', right: 'flow', ask: '帮我排好', result: '排好了', tags: ['一', '二', '三'], big: 'AI' },
+    }), 'utf8')
+    await writeFile(badBannerPath, JSON.stringify({ style: 'poster', poster: null }), 'utf8')
+
+    const okIo = makeIo()
+    assert.equal(await runCli(['layout', mdPath, '--banner', bannerPath, '--out', outHtml, '--data-dir', dir, '--json'], okIo), 0)
+    const okRes = JSON.parse(okIo.read().out)
+    assert.equal(okRes.ok, true)
+    assert.deepEqual(okRes.bannerWarnings, [])
+    assert.match(await readFile(outHtml, 'utf8'), /"banner": \{"orange": "<svg/)
+
+    const badIo = makeIo()
+    assert.equal(await runCli(['layout', mdPath, '--banner', badBannerPath, '--data-dir', dir, '--json'], badIo), 2)
+    assert.equal(JSON.parse(badIo.read().out).code, 'USAGE')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 test('可执行入口 bin/wechat-studio.js 真实子进程冒烟测试', async () => {
   const pkg = JSON.parse(await readFile(join(ROOT, 'package.json'), 'utf8'))
   const { stdout } = await execFileAsync(process.execPath, [BIN_PATH, '--version', '--json'])

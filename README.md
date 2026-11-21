@@ -288,7 +288,7 @@ an OVERSIZED, RELAXED-FIT heavyweight waffle-knit short-sleeve polo shirt in Mid
 # 直接运行（或 npm link 后全局使用 wechat-studio）
 npx dsh-wechat-studio --help
 
-# Markdown 排成公众号 HTML（--json 保证 stdout 输出单行结构化 JSON）
+# Markdown 排成公众号 HTML（--json 保证 stdout 输出单行结构化 JSON；可选 --banner <spec.json> 与 --follow-card）
 wechat-studio layout article.md --style neo --theme forest --out preview.html --json
 
 # 渲染单张公众号 SMIL 动画 SVG 卡片

@@ -22,7 +22,8 @@ description: 通过 wechat-studio CLI 调用公众号成稿台能力（公众号
 wechat-studio skills --json
 
 # 1. Markdown 排成公众号 HTML（支持文件路径或 - 读 stdin；推荐加 --out 避免大体积 HTML 占满上下文）
-wechat-studio layout article.md --style neo --theme forest --out preview.html --json
+# 如需开头横幅，先读 skills --json 里的 banner.md 生成规格 JSON，再通过 --banner 传入；--follow-card 开启文末关注卡
+wechat-studio layout article.md --style neo --theme forest --banner banner.json --follow-card --out preview.html --json
 cat article.md | wechat-studio layout - --out preview.html --json
 
 # 2. 渲染单张公众号 SMIL 动画 SVG 卡片

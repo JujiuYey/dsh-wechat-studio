@@ -7,9 +7,11 @@ import { readJsonSafe, writeJsonAtomic } from '../src/fs-json.js'
 
 const dir = () => mkdtempSync(join(tmpdir(), 'ws-fsjson-'))
 
-test('写入后可读回，并保留上一版为 .bak', async () => {
+test('首次写入不生成 .bak，二次写入保留上一版为 .bak', async () => {
   const file = join(dir(), 'a.json')
   await writeJsonAtomic(file, { n: 1 })
+  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { n: 1 })
+  assert.equal(existsSync(`${file}.bak`), false)
   await writeJsonAtomic(file, { n: 2 })
   assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { n: 2 })
   assert.deepEqual(JSON.parse(readFileSync(`${file}.bak`, 'utf8')), { n: 1 })

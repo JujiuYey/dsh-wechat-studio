@@ -11,7 +11,7 @@ import { buildCoverPromptRequest } from './cover-prompt.js'
 import { COVER_STYLES } from './cover-styles.js'
 import { coverPrompt, generateArkCover, generateBailianCover, readCover, saveCover } from './cover.js'
 import { buildInsights, importData, INSIGHTS_EMPTY } from './insights.js'
-import { detectionText, renderLayout, renderSvgCard, resolveLayoutPreferences, STYLES, SVG_CARD_KINDS, THEMES } from './layout.js'
+import { checkBanner, detectionText, renderLayout, renderSvgCard, resolveLayoutPreferences, STYLES, SVG_CARD_KINDS, THEMES } from './layout.js'
 import { readSettings } from './settings.js'
 import { dshHome, JsonStore, Store } from './store.js'
 import { analyzeWritingStyle, applyWritingStyle, buildAnalyzePrompt, buildPreviewPrompt, previewWritingStyle, readStyleState, restoreDefaultStyle } from './writing-style.js'
@@ -44,7 +44,7 @@ const LLM_OPTIONS = {
 }
 
 const VALUE_FLAGS = new Set([
-  '--data-dir', '--style', '--theme', '--out', '--title', '--line', '--lines-file',
+  '--data-dir', '--style', '--theme', '--banner', '--out', '--title', '--line', '--lines-file',
   '--range', '--key', '--endpoint', '--resolution', '--format', '--provider',
   '--prompt-file', '--note', '--topic', '--model', '--base-url',
 ])
@@ -77,6 +77,7 @@ const SUB_HELP = {
 选项:
   --style <id>       正文风格（${STYLES.join(', ')}）
   --theme <id>       配色主题（${THEMES.join(', ')}）
+  --banner <json>    开头横幅规格 JSON 文件（按 skills/banner.md 生成）
   --follow-card      包含文末关注卡
   --out <file.html>  输出 HTML 到文件（推荐 Agent 配合 --json 使用，避免大体积 HTML 占满上下文）
   --data-dir <path>  指定工作区目录
@@ -284,11 +285,12 @@ async function handleLayout(argv, io) {
   const { values, positionals } = parseSubcommandArgs(argv, {
     style: { type: 'string' },
     theme: { type: 'string' },
+    banner: { type: 'string' },
     'follow-card': { type: 'boolean', default: false },
     out: { type: 'string' },
   })
   if (values.help) return emitSuccess(io, values.json, { help: SUB_HELP.layout }, SUB_HELP.layout)
-  const usage = '用法：wechat-studio layout <file.md|-> [--style <id>] [--theme <id>] [--follow-card] [--out <file.html>]'
+  const usage = '用法：wechat-studio layout <file.md|-> [--style <id>] [--theme <id>] [--banner <spec.json>] [--follow-card] [--out <file.html>]'
   assertPositionals(positionals, 1, usage)
   const file = positionals[0]
   if (!file) throw new UsageError(usage)
@@ -298,14 +300,31 @@ async function handleLayout(argv, io) {
   if (values.theme && !THEMES.includes(values.theme)) {
     throw new UsageError(`不支持的配色主题：${values.theme}（可选：${THEMES.join(', ')}）`)
   }
+  if (file === '-' && values.banner === '-') {
+    throw new UsageError('正文和 --banner 不能同时从标准输入 - 读取。')
+  }
   const dataDir = resolveDataDir(values, io.env)
-  const [markdown, settings] = await Promise.all([readTextFile(file, 'Markdown 文件', io), readSettings(dataDir)])
+  const [markdown, settings, bannerSpec] = await Promise.all([
+    readTextFile(file, 'Markdown 文件', io),
+    readSettings(dataDir),
+    values.banner ? readJsonFile(values.banner, '横幅规格 JSON', io) : Promise.resolve(null),
+  ])
+  let bannerWarnings = []
+  if (bannerSpec !== null) {
+    if (!bannerSpec || typeof bannerSpec !== 'object' || Array.isArray(bannerSpec)) {
+      throw new UsageError('横幅规格必须是 JSON 对象（请参考 skills/banner.md）。')
+    }
+    bannerWarnings = await checkBanner(bannerSpec)
+    const fatal = bannerWarnings.find(w => w.startsWith('规格画不出来'))
+    if (fatal) throw new UsageError(`横幅规格无效：${fatal}`)
+  }
   const prefs = resolveLayoutPreferences(settings)
   const style = values.style ?? prefs.style
   const theme = values.theme ?? prefs.theme
   const { html, report } = await renderLayout(markdown, {
     style,
     theme,
+    banner: bannerSpec ?? undefined,
     followCard: values['follow-card'],
     brand: settings.brand,
   })
@@ -316,6 +335,7 @@ async function handleLayout(argv, io) {
     out: values.out ?? null,
     chars: html.length,
     report,
+    ...(bannerSpec ? { bannerWarnings } : {}),
     ...(values.out ? {} : { html }),
   }
   const text = values.out
