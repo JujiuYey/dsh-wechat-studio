@@ -66,6 +66,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
+          fetch-depth: 0
           persist-credentials: false
       # Node 24 ships an npm version compatible with Trusted Publishing.
       - uses: actions/setup-node@v6
@@ -100,16 +101,26 @@ jobs:
             cat npm-view-error.log >&2
             exit 1
           fi
+      - name: Generate release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          packages=(./artifacts/*.tgz)
+          node scripts/release-notes.mjs --tag "$RELEASE_TAG" --tarball "${packages[0]}" --out release-notes.md
       - name: Create GitHub Release and attach the same tarball
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.ref_name }}
         shell: bash
         run: |
+          packages=(./artifacts/*.tgz)
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release upload "$RELEASE_TAG" artifacts/*.tgz --clobber
+            # 保留已有 Release 说明（避免覆盖人工润色），只补传/刷新附件
+            gh release upload "$RELEASE_TAG" "${packages[0]}" --clobber
           else
             args=()
             [[ "$RELEASE_TAG" != *-* ]] || args+=(--prerelease)
-            gh release create "$RELEASE_TAG" artifacts/*.tgz --verify-tag --generate-notes "${args[@]}"
+            gh release create "$RELEASE_TAG" "${packages[0]}" --verify-tag --title "$RELEASE_TAG" --notes-file release-notes.md "${args[@]}"
           fi
