@@ -25,6 +25,7 @@ import { JsonStore, Store } from './store.js'
 import { createVersionChecker } from './version.js'
 import { detect } from './zhuque.js'
 import { draftSvgCard, insertSvgCard, previewSvgCard } from './svg-cards.js'
+import { latestCover, pushWechatDraft, verifyCredentials } from './wechat.js'
 import { normalizeStyleProfile } from './writing-style-shared.js'
 import { analyzeWritingStyle, applyWritingStyle, previewWritingStyle, readStyleState, renderHeadlineSkill, renderWriterSkill, restoreDefaultStyle } from './writing-style.js'
 
@@ -1110,6 +1111,33 @@ export async function route(deps, req, res) {
       const endpoint = typeof body.zhuqueEndpoint === 'string' && body.zhuqueEndpoint.trim() ? body.zhuqueEndpoint.trim() : settings.zhuqueEndpoint
       const result = await detect('今天下楼取快递的时候，发现小区门口新开了一家面馆，排队的人不少，我就没进去。', { key, endpoint, fetchImpl: deps.fetchImpl })
       return json(res, 200, { ok: true, tokens: result.tokens })
+    }
+    case 'wechat/verify': {
+      // 验证公众号凭证能不能换到 access_token。填了新的就用新的，没填就用已保存的。
+      const settings = await readSettings(store.root)
+      const appId = typeof body.mpAppId === 'string' && body.mpAppId.trim() ? body.mpAppId.trim() : settings.mp.appId
+      const appSecret = typeof body.mpAppSecret === 'string' && body.mpAppSecret.trim() ? body.mpAppSecret.trim() : settings.mp.appSecret
+      if (!appId || !appSecret) throw Object.assign(new Error('请先填写 AppID 和 AppSecret 再验证。'), { status: 400 })
+      const { nickname, headImg } = await verifyCredentials(appId, appSecret, deps.fetchImpl)
+      return json(res, 200, { ok: true, nickname, headImg })
+    }
+    case 'wechat/draft': {
+      // 页面把排版好的 HTML（横幅 + 正文，和复制到公众号的同一份）发上来，推到草稿箱。
+      const article = mustFind(await store.read(), body.id)
+      if (typeof body.html !== 'string' || !body.html.trim()) throw Object.assign(new Error('没有要推送的正文，先回到排版预览再推送。'), { status: 400 })
+      const settings = await readSettings(store.root)
+      const cover = latestCover(article)
+      let coverImage = null
+      if (cover) {
+        try {
+          coverImage = { buffer: await readCover(store.root, cover.id, cover.format), format: cover.format }
+        } catch {
+          // 本地封面文件缺失时降级用占位图，推送照常进行
+        }
+      }
+      const result = await pushWechatDraft({ article, html: body.html, settings, cover: coverImage, fetchImpl: deps.fetchImpl })
+      // 返回完整快照和其它 act 一样，warnings 让页面在推送成功后也能看到占位封面这类提醒
+      return json(res, 200, { ...(await snapshotState(ctx, store, pipeline)), ok: true, mediaId: result.mediaId, warnings: result.warnings })
     }
     case 'zhuque/detect': {
       const article = mustFind(await store.read(), body.id)

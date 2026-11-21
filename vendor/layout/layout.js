@@ -1353,7 +1353,9 @@ body{margin:0;background:#EDEDED;font-family:'PingFang SC',sans-serif;color:#222
 .sw.st{padding:4px 14px}.sw.on{border-color:#222;background:#fff;font-weight:700}
 button.go{border:0;background:#C9643E;color:#fff;padding:9px 16px;border-radius:8px;font-size:14px;cursor:pointer;font-weight:700}
 button.ghost{border:1.5px solid #C9643E;background:#fff;color:#C9643E;padding:8px 14px;border-radius:8px;font-size:13px;cursor:pointer}
-#m{font-size:13px;width:100%} .ok{color:#2F9E5A} .err{color:#C9643E;font-weight:700}
+#m{font-size:13px;width:100%} #m.ok{color:#1B7A44;font-weight:700} .err{color:#C9643E;font-weight:700}
+#toast{position:fixed;left:50%;bottom:30px;transform:translateX(-50%);z-index:9;background:#1B7A44;color:#fff;padding:10px 20px;border-radius:22px;font-size:14px;font-weight:700;box-shadow:0 6px 24px #0003;opacity:0;transition:opacity .25s;pointer-events:none;white-space:nowrap;max-width:min(90vw,640px);overflow:hidden;text-overflow:ellipsis}
+#toast.show{opacity:1}
 .phone{max-width:640px;margin:24px auto 80px;background:#fff;border-radius:14px;box-shadow:0 6px 30px rgba(0,0,0,.08);padding:28px 22px}
 .phone h1{font-size:22px;line-height:1.4;margin:0 0 18px;color:#111}
 #manual{position:fixed;inset:0;background:rgba(0,0,0,.45);display:none;align-items:center;justify-content:center;z-index:9}
@@ -1365,6 +1367,7 @@ body{height:100vh;display:flex;flex-direction:column;background:#eeefec;color:#2
 .actions{display:flex;gap:6px;align-items:center}
 button.go{background:#252a26;padding:9px 14px}
 button.subtle,.actions summary{font:inherit;font-size:13px;padding:8px 10px;border:1px solid #dedfda;border-radius:8px;background:white;cursor:pointer;color:#252a26}
+#push-draft.ok{border-color:#2F9E5A;background:#E8F5EE;color:#1B7A44;font-weight:700}
 .actions details{position:relative}
 .actions .menu{position:absolute;right:0;top:calc(100% + 7px);min-width:150px;padding:5px;background:white;border:1px solid #dedfda;border-radius:9px;box-shadow:0 8px 24px #0002}
 .menu button{display:block;width:100%;text-align:left;border:0;background:white;padding:8px;cursor:pointer;white-space:nowrap}
@@ -1419,6 +1422,7 @@ button.subtle,.actions summary{font:inherit;font-size:13px;padding:8px 10px;bord
 <button type="button" class="go" id="review-copy" hidden>确认并复制全文</button>
 </div></details>
 <button class="go" id="copy-all" onclick="copyAll(this)">复制全文到公众号</button>
+<button class="subtle" id="push-draft" type="button" hidden>推送草稿箱</button>
 <details id="copy-menu"><summary aria-label="其他复制方式">更多</summary><div class="menu">
 <button onclick="copyPart(this,'banner')">只复制横幅</button>
 <button onclick="copyPart(this,'body')">只复制正文</button>
@@ -1441,6 +1445,7 @@ button.subtle,.actions summary{font:inherit;font-size:13px;padding:8px 10px;bord
 <details class="avatar-help"><summary>如何获取公众号图片地址？</summary><ol><li>登录公众号后台，在「内容管理 → 素材库」上传头像图片</li><li>点开图片后右键选择「复制图片地址」</li><li>粘贴到上方输入框（以 <code>https://mmbiz.qpic.cn/</code> 开头）</li></ol></details></section>
 </aside></div>
 <div id="manual"><div><b>浏览器没让我写剪贴板，请手动复制</b><p style="font-size:13px;color:#666">已全选，按 ⌘C / Ctrl+C。</p><textarea readonly></textarea><p style="text-align:right"><button class="ghost" onclick="document.getElementById('manual').style.display='none'">关闭</button></p></div></div>
+<div id="toast" role="status"></div>
 <script>
 const D=__DATA__;
 const G=document.getElementById('gif');
@@ -1523,11 +1528,15 @@ function renderReview(){
   document.getElementById('review-stats').textContent=D.review?.stats||'';
 }
 let copyFallback=false;
-reviewCopy.onclick=()=>copyAll(document.getElementById('copy-all'),true,copyFallback);
+function setReviewCopyAction(action){reviewAction=action;reviewCopy.textContent=action=='draft'?'确认并推送草稿箱':'确认并复制全文'}
+reviewCopy.onclick=()=>{
+  if(reviewAction=='draft'){setReviewCopyAction(null);pushDraft(document.getElementById('push-draft'),true);return;}
+  setReviewCopyAction(null);copyAll(document.getElementById('copy-all'),true,copyFallback);
+};
 for(const panel of popovers)panel.addEventListener('toggle',()=>{
   if(panel.open)for(const other of popovers){if(other!==panel)other.open=false;}
 });
-review.addEventListener('toggle',()=>{if(!review.open)reviewCopy.hidden=true});
+review.addEventListener('toggle',()=>{if(!review.open){reviewCopy.hidden=true;setReviewCopyAction(null)}});
 function render(){const p=parts(esc(G.value.trim()||''));document.getElementById('pv').innerHTML=(p.banner?'<section style="margin:0 0 24px">'+p.banner+'</section>':'')+p.body;
   document.getElementById('sts').innerHTML=Object.keys(D.styles).map(k=>'<button type="button" class="sw st'+(k==style?' on':'')+'" title="'+D.style_desc[k]+'" onclick="pickS(\''+k+'\')">'+D.style_names[k]+'</button>').join('');
   document.getElementById('sws').innerHTML=Object.keys(D.palette).map(k=>'<button type="button" class="sw'+(k==theme?' on':'')+'" onclick="pick(\''+k+'\')"><i style="background:'+D.palette[k].main+'"></i>'+D.names[k]+'</button>').join('');renderReview()}
@@ -1556,8 +1565,11 @@ if(D.studio_options){
   window.setStudioOptions({...options,busy:true,followPending:true,
     status:options.banner.style==='none'?'':options.banner.ready?'已生成':'待生成'});
   window.frameElement?.dispatchEvent(new Event('studio-options-ready'));
+  document.getElementById('push-draft').hidden=false;
 }
 function msg(t,ok,act){const m=document.getElementById('m');m.textContent=t;m.className=ok?'ok':'err';if(act){const btn=document.createElement('button');btn.type='button';btn.className='msg-act';btn.textContent=act.label;btn.onclick=act.onClick;m.append(' ',btn)}}
+let toastTimer=0;
+function showToast(t){const el=document.getElementById('toast');el.textContent=t;el.classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>el.classList.remove('show'),4000)}
 function flash(b,t){const o=b.dataset.l||b.textContent;b.dataset.l=o;b.textContent=t;setTimeout(()=>b.textContent=o,1800)}
 function need(part,fallback,retry){const u=G.value.trim();const raw=parts('GIF_URL_HERE');if((part?raw[part]:raw.banner+raw.body).indexOf('GIF_URL_HERE')<0)return parts('');
   if(fallback||!u)return parts('');
@@ -1570,13 +1582,24 @@ async function put(h){const t=h.replace(/<[^>]+>/g,'');if(legacy(h,t))return tru
 function manual(p){const d=document.getElementById('manual');const t=d.querySelector('textarea');t.value=p;d.style.display='flex';t.focus();t.select()}
 async function send(b,h,what){if(await put(h)){flash(b,'已复制 ✓');msg('已复制'+what+'（'+D.style_names[style]+' · '+D.names[theme]+'），去公众号编辑器正文里粘贴',true)}else{msg('这个窗口不允许写剪贴板：请用 Chrome 直接打开本文件',false);manual(h)}}
 async function copyAll(b,confirmed=false,fallback=false){const p=need(null,fallback,()=>copyAll(b,confirmed,true));if(!p)return;
-  if(!confirmed&&D.review?.before.length){copyFallback=fallback;reviewCopy.hidden=false;review.open=true;return;}
+  if(!confirmed&&D.review?.before.length){copyFallback=fallback;setReviewCopyAction('copy');reviewCopy.hidden=false;review.open=true;return;}
   copyFallback=false;review.open=false;send(b,(p.banner?'<section style="margin:0 0 24px">'+p.banner+'</section>':'')+p.body,'全文')}
 async function copyMd(b){const t=D.md||'';let ok=false;
   try{await navigator.clipboard.writeText(t);ok=true}catch(e){}
   if(!ok){const f=e=>{e.clipboardData.setData('text/plain',t);e.preventDefault();ok=true};document.addEventListener('copy',f);try{document.execCommand('copy')}catch(e){}document.removeEventListener('copy',f)}
   if(ok){flash(b,'已复制 ✓');msg('已复制 Markdown（'+t.length+' 字），可以贴到朱雀做检测',true)}else{msg('浏览器没让写剪贴板，请手动复制',false);manual(t)}}
 async function copyPart(b,k,fallback=false){const p=need(k,fallback,()=>copyPart(b,k,true));if(!p)return;if(!p[k]){msg('这篇没有横幅',false);return}send(b,p[k],k=='banner'?'横幅':'正文')}
+let reviewAction=null;
+async function pushDraft(b,confirmed=false,fallback=false){const p=need(null,fallback,()=>pushDraft(b,confirmed,true));if(!p)return;
+  if(!confirmed&&D.review?.before.length){setReviewCopyAction('draft');reviewCopy.hidden=false;review.open=true;return;}
+  review.open=false;
+  if(!saveLayoutPreferences){msg('请从工作台里打开排版预览再推送',false);return;}
+  const label=b.textContent;b.disabled=true;b.textContent='推送中…';
+  const ok=await saveLayoutPreferences('wechat/draft',{html:(p.banner?'<section style="margin:0 0 24px">'+p.banner+'</section>':'')+p.body});
+  b.disabled=false;b.textContent=label;
+  if(ok){b.classList.add('ok');flash(b,'已推送 ✓');setTimeout(()=>b.classList.remove('ok'),1800);showToast('✓ 已推送到公众号草稿箱，去后台「草稿箱」查看')}
+  else msg('推送没有成功，看页面上的提示',false)}
+document.getElementById('push-draft').onclick=()=>pushDraft(document.getElementById('push-draft'));
 </script></body></html>`
 
 const ORDER = ['图片', '图注', '视频占位', '动画卡', '滑动卡']

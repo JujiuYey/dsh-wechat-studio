@@ -11,7 +11,7 @@ import { COVER_STYLES } from '../src/cover-styles.js'
 // 稿面：左边对话改稿，中间是稿子和纸边批注，右边是标题、朱雀质检和导出。
 import React from 'react'
 import { cardMarkdown, emphasisFormats, formatSelection, insertFormats } from './editor-format.js'
-import { act, copyDetectionText, copyMarkdown, copyText, countCurrentParagraphDrafts, getState, loadLayout, loadModels, loadRevisions, loadSettings, loadSkills, loadStyleProfile, loadVersion, openStyleWizard, previewMarkdownReimport, reimportMarkdown, rememberArticleView, saveSettings, setState, testZhuque, toast, uploadImage, uploadPortrait, uploadReport, useStudio } from './state.js'
+import { act, copyDetectionText, copyMarkdown, copyText, countCurrentParagraphDrafts, getState, loadLayout, loadModels, loadRevisions, loadSettings, loadSkills, loadStyleProfile, loadVersion, openStyleWizard, previewMarkdownReimport, reimportMarkdown, rememberArticleView, saveSettings, setState, testWechat, testZhuque, toast, uploadImage, uploadPortrait, uploadReport, useStudio } from './state.js'
 import { InsightsView } from './insights.jsx'
 import { InlineDiagramDialog, InlineDiagramPane } from './inline-diagrams.jsx'
 import { MarkdownImportFields } from './markdown-import.jsx'
@@ -1627,6 +1627,8 @@ function SettingsDialog({ onOpenPlugin }) {
   const [endpoint, setEndpoint] = React.useState(null)
   const [fixed, setFixed] = React.useState(null)
   const [test, setTest] = React.useState(null)
+  const [mp, setMp] = React.useState(null)
+  const [mpTest, setMpTest] = React.useState(null)
   const [busy, setBusy] = React.useState(false)
   React.useEffect(() => { loadSettings() }, [])
   const close = () => setState({ dialog: null, settingsPage: null })
@@ -1638,6 +1640,7 @@ function SettingsDialog({ onOpenPlugin }) {
     { id: 'cover', title: '封面生成', icon: 'spark', description: isBailian ? '配置阿里云百炼的生图模型和凭证。' : '配置火山方舟的生图模型和凭证。', ready: isBailian ? settings.bailianKeySet : settings.arkKeySet, link: isBailian ? 'https://bailian.console.aliyun.com/cn-beijing/model/settings/api-key' : 'https://ark.volcengine.com/region:cn-beijing/apikey', linkLabel: isBailian ? '阿里云百炼 API Key' : '火山方舟 API Key' },
     { id: 'storage', title: '图片图床', icon: 'upload', description: '将飞书图片自动转存到 Cloudinary，供排版预览使用。', ready: Boolean(settings.cloudinary?.cloudName && settings.cloudinary?.apiKey && settings.cloudinary?.apiSecretSet), link: 'https://console.cloudinary.com/settings/api-keys', linkLabel: 'Cloudinary API Keys' },
     { id: 'quality', title: '朱雀质检', icon: 'scan', description: '管理检测凭证和需要排除的固定文案。', ready: settings.zhuqueKeySet, link: 'https://console.cloud.tencent.com/edgeone', linkLabel: 'EdgeOne 控制台' },
+    { id: 'mp', title: '公众号凭证', icon: 'send', description: '配置公众号的 AppID 和 AppSecret，用于一键推送排版好的内容到草稿箱。', ready: settings.mp?.appSecretSet, link: 'https://mp.weixin.qq.com/', linkLabel: '公众号后台' },
   ]
   const selected = pages.find(item => item.id === page)
   const endpointValue = endpoint ?? (settings.zhuqueEndpointDefault ? '' : settings.zhuqueEndpoint)
@@ -1656,11 +1659,19 @@ function SettingsDialog({ onOpenPlugin }) {
     if (key.trim()) out.zhuqueKey = key.trim()
     out.cloudinary = { ...cloudinary }
     if (out.cloudinary.apiSecret === '') delete out.cloudinary.apiSecret
+    out.mp = { ...(mp ?? {}) }
+    if (out.mp.appSecret === '') delete out.mp.appSecret
     return out
   }
   const runTest = async () => {
     setTest({ running: true })
     setTest(await testZhuque({ zhuqueKey: key.trim(), zhuqueEndpoint: endpointValue }))
+  }
+  const runMpTest = async () => {
+    setMpTest({ running: true })
+    const patch = mp ?? {}
+    // 没填的项用已保存的值：和后端「填了就试新的，没填就试已保存的」约定对齐
+    setMpTest(await testWechat({ mpAppId: patch.appId?.trim() || undefined, mpAppSecret: patch.appSecret?.trim() || undefined }))
   }
   const submit = async event => {
     event.preventDefault()
@@ -1827,6 +1838,32 @@ function SettingsDialog({ onOpenPlugin }) {
                 <textarea rows={3} value={fixedValue} onChange={e => setFixed(e.target.value)} />
               </label>
               <p className="ws-muted ws-small">每篇都一样的开头语、结尾引导会和正文混进同一个片段，把分数拉高。</p>
+            </fieldset>
+
+            <fieldset className="ws-group ws-settings-fields" hidden={page !== 'mp'}>
+              <label className="ws-field"><span>公众号名称</span>
+                <input value={mp?.name ?? settings.mp?.name ?? ''} maxLength={100}
+                  onChange={e => setMp({ ...mp, name: e.target.value })} />
+              </label>
+              <label className="ws-field"><span>AppID</span>
+                <input spellCheck={false} autoComplete="off" value={mp?.appId ?? settings.mp?.appId ?? ''}
+                  placeholder="例如 wx1234567890abcdef"
+                  onChange={e => { setMp({ ...mp, appId: e.target.value }); setMpTest(null) }} />
+              </label>
+              <label className="ws-field"><span>AppSecret</span>
+                <input type="password" autoComplete="off" spellCheck={false} value={mp?.appSecret ?? ''}
+                  placeholder={settings.mp?.appSecretSet ? '已保存，留空表示不改' : '粘贴 AppSecret'}
+                  onChange={e => { setMp({ ...mp, appSecret: e.target.value }); setMpTest(null) }} />
+              </label>
+              <p className="ws-muted ws-small">在公众号「设置与开发 → 基本配置」里查看。凭证只存在这台电脑上，推送草稿箱时直接发给微信的接口。如果验证或推送提示 IP 不在白名单，把提示里的 IP 加进「基本配置 → IP 白名单」再试。</p>
+              <div className="ws-row-actions">
+                <button type="button" className="ws-btn" disabled={mpTest?.running
+                  || (!mp?.appSecret?.trim() && !settings.mp?.appSecretSet)
+                  || (!mp?.appId?.trim() && !settings.mp?.appId)}
+                  onClick={runMpTest}>{mpTest?.running ? '正在验证…' : '验证凭证'}</button>
+                {mpTest?.ok ? <span className="ws-ok"><Icon name="check" size={13} />凭证有效{mpTest.nickname ? `，公众号：${mpTest.nickname}` : ''}</span> : null}
+              </div>
+              {mpTest?.error ? <p className="ws-warn">{mpTest.error}</p> : null}
             </fieldset>
 
           </div>

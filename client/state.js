@@ -90,7 +90,10 @@ export async function refresh() {
 export async function act(path, body = {}, { quiet = false } = {}) {
   setState({ pending: path })
   try {
-    accept(await request(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: snap.data?.current?.id, ...body }) }))
+    const data = await request(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: snap.data?.current?.id, ...body }) })
+    // 推送草稿箱这类操作会带非致命提醒（比如封面没生成用了占位图），成功后也要让用户看到
+    if (Array.isArray(data.warnings) && data.warnings.length) toast(data.warnings.join('\n'))
+    accept(data)
     return true
   } catch (err) {
     if (!quiet) toast(err.message, true)
@@ -313,6 +316,15 @@ export async function saveSettings(patch) {
 export async function testZhuque(patch) {
   try {
     return await request('zhuque/test', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(patch) })
+  } catch (err) {
+    return { error: err.message }
+  }
+}
+
+/** 试一次公众号凭证。返回 {ok, nickname, headImg} 或 {error}。 */
+export async function testWechat(patch) {
+  try {
+    return await request('wechat/verify', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(patch) })
   } catch (err) {
     return { error: err.message }
   }

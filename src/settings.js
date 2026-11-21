@@ -7,6 +7,9 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { checkEndpoint, DEFAULT_ENDPOINT } from './zhuque.js'
 
+// 公众号 API 凭证：名称/AppID/AppSecret，用来推送草稿箱。AppSecret 只留在本机。
+const DEFAULT_MP = { name: '', appId: '', appSecret: '' }
+
 // 每篇都一样的固定句：检测时整行去掉，避免和正文混进同一个片段把分数拉高
 const DEFAULTS = { fixedLines: ['设为「星标」', '教你用AI干掉90%的重复劳动'], style: null, theme: null, zhuqueKey: '', zhuqueEndpoint: DEFAULT_ENDPOINT, model: { provider: '', model: '' } }
 
@@ -51,6 +54,11 @@ export async function readSettings(root) {
     fixedLines: lines(saved.fixedLines) ?? DEFAULTS.fixedLines,
     zhuqueKey: typeof saved.zhuqueKey === 'string' ? saved.zhuqueKey : '',
     zhuqueEndpoint: typeof saved.zhuqueEndpoint === 'string' && saved.zhuqueEndpoint ? saved.zhuqueEndpoint : DEFAULT_ENDPOINT,
+    mp: {
+      name: typeof saved.mp?.name === 'string' ? saved.mp.name : '',
+      appId: typeof saved.mp?.appId === 'string' ? saved.mp.appId : '',
+      appSecret: typeof saved.mp?.appSecret === 'string' ? saved.mp.appSecret : '',
+    },
     model: saved.model?.provider && saved.model?.model ? { provider: String(saved.model.provider), model: String(saved.model.model) } : { provider: '', model: '' },
   }
 }
@@ -128,6 +136,15 @@ export async function updateSettings(root, body) {
     if (Boolean(provider) !== Boolean(model)) throw Object.assign(new Error('模型的提供方和名称要一起填'), { status: 400 })
     next.model = { provider, model }
   }
+  if (body.mp && typeof body.mp === 'object') {
+    // appSecret 传空字符串表示清除；不传（undefined）表示保持不变
+    for (const field of ['name', 'appId', 'appSecret']) {
+      if (typeof body.mp[field] === 'string') next.mp[field] = body.mp[field].trim().slice(0, 400)
+    }
+    if (next.mp.appSecret && !/^[a-f0-9]{32}$/i.test(next.mp.appSecret)) {
+      throw Object.assign(new Error('AppSecret 是 32 位十六进制字符串，请到公众号「设置与开发 → 基本配置」复制完整的一串。'), { status: 400 })
+    }
+  }
   await mkdir(root, { recursive: true })
   const file = join(root, 'settings.json')
   await writeFile(`${file}.tmp`, JSON.stringify(next, null, 1), { mode: 0o600 })
@@ -153,6 +170,11 @@ export function publicSettings(settings) {
       cloudName: settings.cloudinary?.cloudName ?? '',
       apiKey: settings.cloudinary?.apiKey ?? '',
       apiSecretSet: Boolean(settings.cloudinary?.apiSecret),
+    },
+    mp: {
+      name: settings.mp?.name ?? DEFAULT_MP.name,
+      appId: settings.mp?.appId ?? DEFAULT_MP.appId,
+      appSecretSet: Boolean(settings.mp?.appSecret),
     },
     zhuqueKeySet: Boolean(key),
     zhuqueKeyTail: key ? key.slice(-4) : '',

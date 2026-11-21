@@ -1,537 +1,537 @@
 {
- "page": {
-  "filename": "layout-golden-公众号排版.html",
-  "sha256": "39a4db8e1ce9dd63869180553d0f35613a961af5e54982dd10dba3bafa5e1449",
-  "bytes": 580893
- },
- "banners": [
-  {
-   "spec": {
-    "slug": "chatcut",
-    "title": "开头横幅 · ChatCut 2.0",
-    "caption": "ChatCut 2.0 实测",
-    "scene": {
-     "layout": "pipeline",
-     "source": {
-      "prop": "chat",
-      "label": "一句大白话"
-     },
-     "processor": {
-      "prop": "clapper",
-      "label": "剪辑 Skill"
-     },
-     "tile": "film",
-     "items": [
-      {
-       "icon": "person",
-       "label": "我的照片"
-      },
-      {
-       "icon": "cup",
-       "label": "商品图"
-      },
-      {
-       "icon": "mic",
-       "label": "口播剪辑"
-      },
-      {
-       "icon": "play",
-       "label": "成片"
-      }
-     ]
-    }
-   },
-   "sha256": "58a8df193bcf259d988ae9556d8e9679aa66c405463a1666ab91e0983e8a1dfc",
-   "issues": []
+  "page": {
+    "filename": "layout-golden-公众号排版.html",
+    "bytes": 583104,
+    "sha256": "10aa55494154e18722e4ac2950cc4956d67085136e3a7073335a005f4858f780"
   },
-  {
-   "spec": {
-    "slug": "lingguang",
-    "title": "开头横幅 · 灵光 2.0",
-    "caption": "灵光 2.0 实测",
-    "scene": {
-     "layout": "path",
-     "start_icon": "bell",
-     "start_label": "交代一次",
-     "nodes": [
-      {
-       "icon": "sun",
-       "label": "06:00 吃药"
+  "banners": [
+    {
+      "spec": {
+        "slug": "chatcut",
+        "title": "开头横幅 · ChatCut 2.0",
+        "caption": "ChatCut 2.0 实测",
+        "scene": {
+          "layout": "pipeline",
+          "source": {
+            "prop": "chat",
+            "label": "一句大白话"
+          },
+          "processor": {
+            "prop": "clapper",
+            "label": "剪辑 Skill"
+          },
+          "tile": "film",
+          "items": [
+            {
+              "icon": "person",
+              "label": "我的照片"
+            },
+            {
+              "icon": "cup",
+              "label": "商品图"
+            },
+            {
+              "icon": "mic",
+              "label": "口播剪辑"
+            },
+            {
+              "icon": "play",
+              "label": "成片"
+            }
+          ]
+        }
       },
-      {
-       "icon": "pill",
-       "label": "14:30 再催"
-      },
-      {
-       "icon": "wallet",
-       "label": "12/01 巡检扣费"
-      },
-      {
-       "icon": "train",
-       "label": "出发前看车次"
-      },
-      {
-       "icon": "moon",
-       "label": "没变化不打扰",
-       "check": false
-      }
-     ]
-    }
-   },
-   "sha256": "6c8a34344ae1f579eaa6b94ffbfd65814af68821eb5dbcfde53cdec943c8f6e1",
-   "issues": []
-  },
-  {
-   "spec": {
-    "slug": "lingguang-fly",
-    "title": "开头横幅 · 灵光（飞入版）",
-    "caption": "灵光 2.0 实测",
-    "scene": {
-     "layout": "fly",
-     "flyer": "pill",
-     "left_label": "交代一次",
-     "device": "computer",
-     "device_label": "它记着、盯着",
-     "screen": [
-      "bell",
-      "calendar",
-      "wallet"
-     ],
-     "items": [
-      {
-       "icon": "pill",
-       "label": "到点提醒"
-      },
-      {
-       "icon": "bell",
-       "label": "没回再催"
-      },
-      {
-       "icon": "wallet",
-       "label": "每月巡检"
-      }
-     ]
-    }
-   },
-   "sha256": "0a289d62a646d8ed119da0a8e7ad3cf6ce866ef15c0dc3b1b78979ae5c27d75d",
-   "issues": []
-  },
-  {
-   "spec": {
-    "slug": "chatcut-ba",
-    "title": "开头横幅 · ChatCut",
-    "caption": "ChatCut 2.0 实测",
-    "scene": {
-     "layout": "before_after",
-     "before_label": "以前：素材一堆手动剪",
-     "before": [
-      "photo",
-      "mic",
-      "text",
-      "music",
-      "scissors",
-      "play"
-     ],
-     "via": {
-      "icon": "chat",
-      "label": "一句话"
-     },
-     "after_label": "现在：一句话出片",
-     "items": [
-      {
-       "icon": "mic",
-       "label": "口播初剪"
-      },
-      {
-       "icon": "text",
-       "label": "字幕包装"
-      },
-      {
-       "icon": "music",
-       "label": "配乐压低"
-      },
-      {
-       "icon": "play",
-       "label": "成片"
-      }
-     ]
-    }
-   },
-   "sha256": "b65e289370169048927b6fef09ce70c0be6263d4af0a83233a504745743d53b6",
-   "issues": []
-  },
-  {
-   "spec": {
-    "scene": {
-     "layout": "hub",
-     "center": {
-      "icon": "spark",
-      "label": "交代一次就行"
-     },
-     "nodes": [
-      {
-       "icon": "pill",
-       "label": "吃药提醒"
-      },
-      {
-       "icon": "wallet",
-       "label": "扣费巡检"
-      },
-      {
-       "icon": "train",
-       "label": "出发看车次"
-      },
-      {
-       "icon": "calendar",
-       "label": "日程"
-      },
-      {
-       "icon": "bell",
-       "label": "没回再催"
-      },
-      {
-       "icon": "moon",
-       "label": "不打扰",
-       "check": false
-      }
-     ]
-    }
-   },
-   "sha256": "28ec753ab722259e72937ba786894ea283fcf2e0d11805a531a798dbce826d81",
-   "issues": []
-  },
-  {
-   "spec": {
-    "scene": {
-     "layout": "stack",
-     "label": "一个个 Skill",
-     "blocks": [
-      {
-       "icon": "doc",
-       "label": "写稿"
-      },
-      {
-       "icon": "text",
-       "label": "起标题"
-      },
-      {
-       "icon": "photo",
-       "label": "配图"
-      },
-      {
-       "icon": "image",
-       "label": "封面"
-      },
-      {
-       "icon": "code",
-       "label": "排版"
-      },
-      {
-       "icon": "mail",
-       "label": "发布"
-      }
-     ],
-     "result": {
-      "icon": "play",
-      "label": "公众号写作驾驶舱"
-     }
-    }
-   },
-   "sha256": "c10376faf727e25dcf74471674f7490006fb1809c77b40302f904ab1fbb90604",
-   "issues": []
-  },
-  {
-   "spec": {
-    "scene": {
-     "layout": "dialog",
-     "window_title": "ChatCut",
-     "messages": [
-      {
-       "from": "me",
-       "text": "把这段口播剪一下"
-      },
-      {
-       "from": "ai",
-       "text": "收到，粗剪完成"
-      },
-      {
-       "from": "me",
-       "text": "配乐再小一点"
-      },
-      {
-       "from": "ai",
-       "text": "已调好，正在导出"
-      }
-     ],
-     "items": [
-      {
-       "icon": "play",
-       "label": "成片"
-      },
-      {
-       "icon": "text",
-       "label": "字幕"
-      },
-      {
-       "icon": "image",
-       "label": "封面"
-      }
-     ]
-    }
-   },
-   "sha256": "a833151dfd90cc84e44b631cc357c6808b3cc522ca0add9866ac7cca39f280ad",
-   "issues": []
-  },
-  {
-   "spec": {
-    "scene": {
-     "layout": "calendar",
-     "start_icon": "bell",
-     "start_label": "交代一次",
-     "stamp": "已提醒",
-     "days": [
-      {
-       "day": "周一",
-       "icon": "pill"
-      },
-      {
-       "day": "周二",
-       "icon": "pill"
-      },
-      {
-       "day": "周三",
-       "icon": "train"
-      },
-      {
-       "day": "周四",
-       "icon": "pill"
-      },
-      {
-       "day": "周五",
-       "icon": "wallet"
-      },
-      {
-       "day": "周六",
-       "icon": "sun"
-      },
-      {
-       "day": "周日",
-       "icon": "moon",
-       "stamp": "休息"
-      }
-     ]
-    }
-   },
-   "sha256": "bea70629063ca7c8680b777a0a68da6c212fc022255db22357ca6f5a1f6cdb94",
-   "issues": []
-  },
-  {
-   "spec": {
-    "scene": {
-     "layout": "funnel",
-     "input_label": "群里一天几百条",
-     "filter_label": "只挑重点",
-     "inputs": [
-      "chat",
-      "chat",
-      "photo",
-      "chat",
-      "mail",
-      "chat",
-      "doc",
-      "chat",
-      "photo",
-      "chat"
-     ],
-     "items": [
-      {
-       "icon": "doc",
-       "label": "今日日报"
-      },
-      {
-       "icon": "bell",
-       "label": "@我的事"
-      },
-      {
-       "icon": "spark",
-       "label": "值得看"
-      }
-     ]
-    }
-   },
-   "sha256": "32574c67ee9166f7179d70a2a42bc5de01c9dc8303b2e36b4f2a920e634c09cf",
-   "issues": []
-  },
-  {
-   "spec": {
-    "scene": {
-     "layout": "chart",
-     "bars": [
-      {
-       "label": "手动",
-       "value": 180,
-       "text": "3 小时"
-      },
-      {
-       "label": "用 Skill",
-       "value": 10,
-       "text": "10 分钟",
-       "color": "teal"
-      }
-     ],
-     "badge": {
-      "icon": "spark",
-      "label": "省 94%",
-      "sub": "同一条视频的剪辑时间"
-     }
-    }
-   },
-   "sha256": "30ed2a39c1a846ba17f48d81cbc95465e851bb5a34c7cce9ff8512165ddce007",
-   "issues": []
-  },
-  {
-   "spec": {
-    "slug": "card-xxx",
-    "title": "开头横幅 · 标题卡 · XXX",
-    "style": "card",
-    "card": {
-     "theme": "blue",
-     "eyebrow": "PRODUCT · TOPIC",
-     "title1": "第一行黑字",
-     "title2": "第二行主题色",
-     "sub": "关键词 · 关键词 · 关键词",
-     "right": "tree",
-     "...右栏字段...": "..."
-    }
-   },
-   "sha256": "b80b55026555dda233559bd11d29a648dc7563b85f72013455038fdec61e0122",
-   "issues": []
-  },
-  {
-   "spec": {
-    "slug": "poster-chatcut",
-    "title": "开头横幅 · 大字海报 · ChatCut",
-    "style": "poster",
-    "poster": {
-     "eyebrow": "CHATCUT 2.0 实测",
-     "title1": "剪辑提示词写不好",
-     "title2": "交给视频 Agent",
-     "right": "flow",
-     "ask": "帮我剪一下口播",
-     "result": "成片好了",
-     "result_sub": "20 秒剪到 14 秒",
-     "tags": [
-      "AI 广告",
-      "口播剪辑",
-      "复刻爆款"
-     ],
-     "big": "2.0"
-    }
-   },
-   "sha256": "0976f9fc01a018b12328ebf9b93963174c5e820863e292650f5f6db361ddaf53",
-   "issues": []
-  },
-  {
-   "spec": {
-    "slug": "poster-chatcut",
-    "title": "开头横幅 · 大字海报 · ChatCut",
-    "style": "neo",
-    "poster": {
-     "eyebrow": "CHATCUT 2.0 实测",
-     "title1": "剪辑提示词写不好",
-     "title2": "交给视频 Agent",
-     "right": "flow",
-     "ask": "帮我剪一下口播",
-     "result": "成片好了",
-     "result_sub": "20 秒剪到 14 秒",
-     "tags": [
-      "AI 广告",
-      "口播剪辑",
-      "复刻爆款"
-     ],
-     "big": "AI"
-    }
-   },
-   "sha256": "30f838078090d3f7ea0c1b14d9b021002a7ac0cdb1ee60e9a1b7cae2240d20d1",
-   "issues": []
-  },
-  {
-   "spec": {
-    "slug": "card-xxx",
-    "title": "开头横幅 · 标题卡 · XXX",
-    "style": "card",
-    "card": {
-     "theme": "blue",
-     "eyebrow": "PRODUCT · TOPIC",
-     "title1": "第一行黑字",
-     "title2": "第二行主题色",
-     "sub": "关键词 · 关键词 · 关键词",
-     "right": "terminal",
-     "...右栏字段...": "...",
-     "avatar": false,
-     "lines": [
-      {
-       "type": "cmd",
-       "text": "npm test"
-      },
-      {
-       "type": "out",
-       "text": "跑完 120 条用例"
-      },
-      {
-       "type": "ok",
-       "text": "全部通过"
-      }
-     ]
-    }
-   },
-   "sha256": "fedf277ab1a33d6de4074685aded1f5fcf85928931c3844377e15c1ea53efa95",
-   "issues": []
-  },
-  {
-   "spec": {
-    "style": "poster",
-    "poster": {
-     "eyebrow": "这是一个特别特别长的眉标文字",
-     "title1": "标题第一行写得太长了啦",
-     "title2": "AI",
-     "right": "steps",
-     "steps": [
-      "只有一步"
-     ]
-    }
-   },
-   "sha256": "37cd346f4a9ece6a41076dba4a5e2a51afb145837c909087bac77b44a6646b54",
-   "issues": [
-    "眉标 eyebrow「这是一个特别特别长的眉标文字」有 14 个字宽，超过 10，会挤出去或重叠，缩短一点",
-    "标题第一行「标题第一行写得太长了啦」有 11 个字宽，超过 8，会挤出去或重叠，缩短一点",
-    "steps 有 1 个，要在 2–3 个之间，多出来的会画不下"
-   ]
-  },
-  {
-   "spec": {
-    "scene": {
-     "layout": "stack",
-     "blocks": [
-      {
-       "icon": "doc",
-       "label": "太长的积木标签"
-      },
-      {
-       "icon": "mic",
-       "label": "配音"
-      }
-     ],
-     "result": {
-      "label": "成品"
-     }
+      "sha256": "58a8df193bcf259d988ae9556d8e9679aa66c405463a1666ab91e0983e8a1dfc",
+      "issues": []
     },
-    "caption": "右上角的说明写得特别特别长"
-   },
-   "sha256": "6a5abca4011995739ab57f5a58097245db964cec039b73007f41d89e46891c70",
-   "issues": [
-    "标签「太长的积木标签」有 7 个字宽，超过 5，会挤出去或重叠，缩短一点"
-   ]
-  }
- ]
+    {
+      "spec": {
+        "slug": "lingguang",
+        "title": "开头横幅 · 灵光 2.0",
+        "caption": "灵光 2.0 实测",
+        "scene": {
+          "layout": "path",
+          "start_icon": "bell",
+          "start_label": "交代一次",
+          "nodes": [
+            {
+              "icon": "sun",
+              "label": "06:00 吃药"
+            },
+            {
+              "icon": "pill",
+              "label": "14:30 再催"
+            },
+            {
+              "icon": "wallet",
+              "label": "12/01 巡检扣费"
+            },
+            {
+              "icon": "train",
+              "label": "出发前看车次"
+            },
+            {
+              "icon": "moon",
+              "label": "没变化不打扰",
+              "check": false
+            }
+          ]
+        }
+      },
+      "sha256": "6c8a34344ae1f579eaa6b94ffbfd65814af68821eb5dbcfde53cdec943c8f6e1",
+      "issues": []
+    },
+    {
+      "spec": {
+        "slug": "lingguang-fly",
+        "title": "开头横幅 · 灵光（飞入版）",
+        "caption": "灵光 2.0 实测",
+        "scene": {
+          "layout": "fly",
+          "flyer": "pill",
+          "left_label": "交代一次",
+          "device": "computer",
+          "device_label": "它记着、盯着",
+          "screen": [
+            "bell",
+            "calendar",
+            "wallet"
+          ],
+          "items": [
+            {
+              "icon": "pill",
+              "label": "到点提醒"
+            },
+            {
+              "icon": "bell",
+              "label": "没回再催"
+            },
+            {
+              "icon": "wallet",
+              "label": "每月巡检"
+            }
+          ]
+        }
+      },
+      "sha256": "0a289d62a646d8ed119da0a8e7ad3cf6ce866ef15c0dc3b1b78979ae5c27d75d",
+      "issues": []
+    },
+    {
+      "spec": {
+        "slug": "chatcut-ba",
+        "title": "开头横幅 · ChatCut",
+        "caption": "ChatCut 2.0 实测",
+        "scene": {
+          "layout": "before_after",
+          "before_label": "以前：素材一堆手动剪",
+          "before": [
+            "photo",
+            "mic",
+            "text",
+            "music",
+            "scissors",
+            "play"
+          ],
+          "via": {
+            "icon": "chat",
+            "label": "一句话"
+          },
+          "after_label": "现在：一句话出片",
+          "items": [
+            {
+              "icon": "mic",
+              "label": "口播初剪"
+            },
+            {
+              "icon": "text",
+              "label": "字幕包装"
+            },
+            {
+              "icon": "music",
+              "label": "配乐压低"
+            },
+            {
+              "icon": "play",
+              "label": "成片"
+            }
+          ]
+        }
+      },
+      "sha256": "b65e289370169048927b6fef09ce70c0be6263d4af0a83233a504745743d53b6",
+      "issues": []
+    },
+    {
+      "spec": {
+        "scene": {
+          "layout": "hub",
+          "center": {
+            "icon": "spark",
+            "label": "交代一次就行"
+          },
+          "nodes": [
+            {
+              "icon": "pill",
+              "label": "吃药提醒"
+            },
+            {
+              "icon": "wallet",
+              "label": "扣费巡检"
+            },
+            {
+              "icon": "train",
+              "label": "出发看车次"
+            },
+            {
+              "icon": "calendar",
+              "label": "日程"
+            },
+            {
+              "icon": "bell",
+              "label": "没回再催"
+            },
+            {
+              "icon": "moon",
+              "label": "不打扰",
+              "check": false
+            }
+          ]
+        }
+      },
+      "sha256": "28ec753ab722259e72937ba786894ea283fcf2e0d11805a531a798dbce826d81",
+      "issues": []
+    },
+    {
+      "spec": {
+        "scene": {
+          "layout": "stack",
+          "label": "一个个 Skill",
+          "blocks": [
+            {
+              "icon": "doc",
+              "label": "写稿"
+            },
+            {
+              "icon": "text",
+              "label": "起标题"
+            },
+            {
+              "icon": "photo",
+              "label": "配图"
+            },
+            {
+              "icon": "image",
+              "label": "封面"
+            },
+            {
+              "icon": "code",
+              "label": "排版"
+            },
+            {
+              "icon": "mail",
+              "label": "发布"
+            }
+          ],
+          "result": {
+            "icon": "play",
+            "label": "公众号写作驾驶舱"
+          }
+        }
+      },
+      "sha256": "c10376faf727e25dcf74471674f7490006fb1809c77b40302f904ab1fbb90604",
+      "issues": []
+    },
+    {
+      "spec": {
+        "scene": {
+          "layout": "dialog",
+          "window_title": "ChatCut",
+          "messages": [
+            {
+              "from": "me",
+              "text": "把这段口播剪一下"
+            },
+            {
+              "from": "ai",
+              "text": "收到，粗剪完成"
+            },
+            {
+              "from": "me",
+              "text": "配乐再小一点"
+            },
+            {
+              "from": "ai",
+              "text": "已调好，正在导出"
+            }
+          ],
+          "items": [
+            {
+              "icon": "play",
+              "label": "成片"
+            },
+            {
+              "icon": "text",
+              "label": "字幕"
+            },
+            {
+              "icon": "image",
+              "label": "封面"
+            }
+          ]
+        }
+      },
+      "sha256": "a833151dfd90cc84e44b631cc357c6808b3cc522ca0add9866ac7cca39f280ad",
+      "issues": []
+    },
+    {
+      "spec": {
+        "scene": {
+          "layout": "calendar",
+          "start_icon": "bell",
+          "start_label": "交代一次",
+          "stamp": "已提醒",
+          "days": [
+            {
+              "day": "周一",
+              "icon": "pill"
+            },
+            {
+              "day": "周二",
+              "icon": "pill"
+            },
+            {
+              "day": "周三",
+              "icon": "train"
+            },
+            {
+              "day": "周四",
+              "icon": "pill"
+            },
+            {
+              "day": "周五",
+              "icon": "wallet"
+            },
+            {
+              "day": "周六",
+              "icon": "sun"
+            },
+            {
+              "day": "周日",
+              "icon": "moon",
+              "stamp": "休息"
+            }
+          ]
+        }
+      },
+      "sha256": "bea70629063ca7c8680b777a0a68da6c212fc022255db22357ca6f5a1f6cdb94",
+      "issues": []
+    },
+    {
+      "spec": {
+        "scene": {
+          "layout": "funnel",
+          "input_label": "群里一天几百条",
+          "filter_label": "只挑重点",
+          "inputs": [
+            "chat",
+            "chat",
+            "photo",
+            "chat",
+            "mail",
+            "chat",
+            "doc",
+            "chat",
+            "photo",
+            "chat"
+          ],
+          "items": [
+            {
+              "icon": "doc",
+              "label": "今日日报"
+            },
+            {
+              "icon": "bell",
+              "label": "@我的事"
+            },
+            {
+              "icon": "spark",
+              "label": "值得看"
+            }
+          ]
+        }
+      },
+      "sha256": "32574c67ee9166f7179d70a2a42bc5de01c9dc8303b2e36b4f2a920e634c09cf",
+      "issues": []
+    },
+    {
+      "spec": {
+        "scene": {
+          "layout": "chart",
+          "bars": [
+            {
+              "label": "手动",
+              "value": 180,
+              "text": "3 小时"
+            },
+            {
+              "label": "用 Skill",
+              "value": 10,
+              "text": "10 分钟",
+              "color": "teal"
+            }
+          ],
+          "badge": {
+            "icon": "spark",
+            "label": "省 94%",
+            "sub": "同一条视频的剪辑时间"
+          }
+        }
+      },
+      "sha256": "30ed2a39c1a846ba17f48d81cbc95465e851bb5a34c7cce9ff8512165ddce007",
+      "issues": []
+    },
+    {
+      "spec": {
+        "slug": "card-xxx",
+        "title": "开头横幅 · 标题卡 · XXX",
+        "style": "card",
+        "card": {
+          "theme": "blue",
+          "eyebrow": "PRODUCT · TOPIC",
+          "title1": "第一行黑字",
+          "title2": "第二行主题色",
+          "sub": "关键词 · 关键词 · 关键词",
+          "right": "tree",
+          "...右栏字段...": "..."
+        }
+      },
+      "sha256": "b80b55026555dda233559bd11d29a648dc7563b85f72013455038fdec61e0122",
+      "issues": []
+    },
+    {
+      "spec": {
+        "slug": "poster-chatcut",
+        "title": "开头横幅 · 大字海报 · ChatCut",
+        "style": "poster",
+        "poster": {
+          "eyebrow": "CHATCUT 2.0 实测",
+          "title1": "剪辑提示词写不好",
+          "title2": "交给视频 Agent",
+          "right": "flow",
+          "ask": "帮我剪一下口播",
+          "result": "成片好了",
+          "result_sub": "20 秒剪到 14 秒",
+          "tags": [
+            "AI 广告",
+            "口播剪辑",
+            "复刻爆款"
+          ],
+          "big": "2.0"
+        }
+      },
+      "sha256": "0976f9fc01a018b12328ebf9b93963174c5e820863e292650f5f6db361ddaf53",
+      "issues": []
+    },
+    {
+      "spec": {
+        "slug": "poster-chatcut",
+        "title": "开头横幅 · 大字海报 · ChatCut",
+        "style": "neo",
+        "poster": {
+          "eyebrow": "CHATCUT 2.0 实测",
+          "title1": "剪辑提示词写不好",
+          "title2": "交给视频 Agent",
+          "right": "flow",
+          "ask": "帮我剪一下口播",
+          "result": "成片好了",
+          "result_sub": "20 秒剪到 14 秒",
+          "tags": [
+            "AI 广告",
+            "口播剪辑",
+            "复刻爆款"
+          ],
+          "big": "AI"
+        }
+      },
+      "sha256": "30f838078090d3f7ea0c1b14d9b021002a7ac0cdb1ee60e9a1b7cae2240d20d1",
+      "issues": []
+    },
+    {
+      "spec": {
+        "slug": "card-xxx",
+        "title": "开头横幅 · 标题卡 · XXX",
+        "style": "card",
+        "card": {
+          "theme": "blue",
+          "eyebrow": "PRODUCT · TOPIC",
+          "title1": "第一行黑字",
+          "title2": "第二行主题色",
+          "sub": "关键词 · 关键词 · 关键词",
+          "right": "terminal",
+          "...右栏字段...": "...",
+          "avatar": false,
+          "lines": [
+            {
+              "type": "cmd",
+              "text": "npm test"
+            },
+            {
+              "type": "out",
+              "text": "跑完 120 条用例"
+            },
+            {
+              "type": "ok",
+              "text": "全部通过"
+            }
+          ]
+        }
+      },
+      "sha256": "fedf277ab1a33d6de4074685aded1f5fcf85928931c3844377e15c1ea53efa95",
+      "issues": []
+    },
+    {
+      "spec": {
+        "style": "poster",
+        "poster": {
+          "eyebrow": "这是一个特别特别长的眉标文字",
+          "title1": "标题第一行写得太长了啦",
+          "title2": "AI",
+          "right": "steps",
+          "steps": [
+            "只有一步"
+          ]
+        }
+      },
+      "sha256": "37cd346f4a9ece6a41076dba4a5e2a51afb145837c909087bac77b44a6646b54",
+      "issues": [
+        "眉标 eyebrow「这是一个特别特别长的眉标文字」有 14 个字宽，超过 10，会挤出去或重叠，缩短一点",
+        "标题第一行「标题第一行写得太长了啦」有 11 个字宽，超过 8，会挤出去或重叠，缩短一点",
+        "steps 有 1 个，要在 2–3 个之间，多出来的会画不下"
+      ]
+    },
+    {
+      "spec": {
+        "scene": {
+          "layout": "stack",
+          "blocks": [
+            {
+              "icon": "doc",
+              "label": "太长的积木标签"
+            },
+            {
+              "icon": "mic",
+              "label": "配音"
+            }
+          ],
+          "result": {
+            "label": "成品"
+          }
+        },
+        "caption": "右上角的说明写得特别特别长"
+      },
+      "sha256": "6a5abca4011995739ab57f5a58097245db964cec039b73007f41d89e46891c70",
+      "issues": [
+        "标签「太长的积木标签」有 7 个字宽，超过 5，会挤出去或重叠，缩短一点"
+      ]
+    }
+  ]
 }
