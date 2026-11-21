@@ -12,6 +12,7 @@ import { COVER_STYLES } from '../src/cover-styles.js'
 import React from 'react'
 import { cardMarkdown, emphasisFormats, formatSelection, insertFormats } from './editor-format.js'
 import { act, copyDetectionText, copyMarkdown, copyText, countCurrentParagraphDrafts, getState, loadLayout, loadModels, loadRevisions, loadSettings, loadSkills, loadStyleProfile, loadVersion, openStyleWizard, previewMarkdownReimport, reimportMarkdown, rememberArticleView, saveSettings, setState, testWechat, testZhuque, toast, uploadImage, uploadPortrait, uploadReport, useStudio } from './state.js'
+import { isDraftReady, readMinutes, summarizeDraftHome } from './draft-home-model.js'
 import { FeedCardPreview } from './feed-preview.jsx'
 import { InsightsView } from './insights.jsx'
 import { InlineDiagramDialog, InlineDiagramPane } from './inline-diagrams.jsx'
@@ -37,6 +38,7 @@ const ICONS = {
   gear: 'M8 5.6a2.4 2.4 0 100 4.8 2.4 2.4 0 000-4.8zM8 1.8v1.7M8 12.5v1.7M1.8 8h1.7M12.5 8h1.7M3.6 3.6l1.2 1.2M11.2 11.2l1.2 1.2M12.4 3.6l-1.2 1.2M4.8 11.2l-1.2 1.2',
   scan: 'M2.5 5.5v-3h3M10.5 2.5h3v3M13.5 10.5v3h-3M5.5 13.5h-3v-3M5 8h6',
   key: 'M5.5 5a3 3 0 100 6 3 3 0 000-6zM8.5 8h5.5M11.5 8v2.2M14 8v2.2',
+  search: 'M7 2.5a4.5 4.5 0 100 9 4.5 4.5 0 000-9zM10.4 10.4L13.5 13.5',
   spark: 'M7 2l1.3 3.7L12 7l-3.7 1.3L7 12l-1.3-3.7L2 7l3.7-1.3zM12.5 10.5l.6 1.4 1.4.6-1.4.6-.6 1.4-.6-1.4-1.4-.6 1.4-.6z',
 }
 
@@ -2028,28 +2030,38 @@ function SkillsView() {
   if (!skills) return <div className="ws-center"><span className="ws-shimmer">正在读取…</span></div>
   if (skills.error) return <div className="ws-center"><p className="ws-muted">读取失败：{skills.error}</p></div>
   return (
-    <div className="ws-page">
-      <h1 className="ws-page-title">技能</h1>
-      <WritingStyleCard />
-      <p className="ws-page-lead">这里显示插件当前使用的技能。写作、标题、去 AI 味、朱雀流程和开头横幅可以通过下方目录覆盖。封面和正文插图使用目录式技能；正文插图支持在覆盖目录中增加或覆盖风格。</p>
-      <div className="ws-skill-list">
-        {skills.skills.map(item => (
-          <div className="ws-skill" key={item.name}>
-            <div className="ws-skill-head">
-              <strong>{SKILL_INFO[item.name]?.name ?? item.name}</strong>
-              <span className={`ws-skill-src ${item.source === 'user' ? 'is-user' : ''}`}>{item.source === 'user' ? '你的版本' : item.source === 'missing' ? '缺失' : '内置'}</span>
+    <main className="ws-page">
+      <div className="ws-dh-shell ws-skills">
+        <header className="ws-dh-masthead">
+          <div className="ws-dh-masthead-left">
+            <span className="ws-dh-kicker">WRITING SKILLS · 技能与风格</span>
+            <div className="ws-dh-title-row">
+              <h1>技能</h1>
+              <p className="ws-dh-dateline"><span><b>{skills.skills.length}</b> 项技能</span></p>
             </div>
-            <p className="ws-muted">{SKILL_INFO[item.name]?.use}</p>
-            <code>{item.displayPath ?? `${item.name}.md`}{item.chars ? ` · ${Math.round(item.chars / 1000)}K` : ''}</code>
           </div>
-        ))}
+        </header>
+        <WritingStyleCard />
+        <p className="ws-page-lead">这里显示插件当前使用的技能。写作、标题、去 AI 味、朱雀流程和开头横幅可以通过下方目录覆盖。封面和正文插图使用目录式技能；正文插图支持在覆盖目录中增加或覆盖风格。</p>
+        <div className="ws-skill-list">
+          {skills.skills.map(item => (
+            <div className="ws-skill" key={item.name}>
+              <div className="ws-skill-head">
+                <strong>{SKILL_INFO[item.name]?.name ?? item.name}</strong>
+                <span className={`ws-skill-src ${item.source === 'user' ? 'is-user' : ''}`}>{item.source === 'user' ? '你的版本' : item.source === 'missing' ? '缺失' : '内置'}</span>
+              </div>
+              <p className="ws-muted">{SKILL_INFO[item.name]?.use}</p>
+              <code>{item.displayPath ?? `${item.name}.md`}{item.chars ? ` · ${Math.round(item.chars / 1000)}K` : ''}</code>
+            </div>
+          ))}
+        </div>
+        <div className="ws-skill-dir">
+          <span>覆盖目录</span>
+          <code>{skills.dir}</code>
+          <button type="button" className="ws-link" onClick={() => navigator.clipboard?.writeText(skills.dir)}>复制路径</button>
+        </div>
       </div>
-      <div className="ws-skill-dir">
-        <span>覆盖目录</span>
-        <code>{skills.dir}</code>
-        <button type="button" className="ws-link" onClick={() => navigator.clipboard?.writeText(skills.dir)}>复制路径</button>
-      </div>
-    </div>
+    </main>
   )
 }
 
@@ -2211,32 +2223,92 @@ function PaperModule({ data }) {
   )
 }
 
+const shortScheduleDate = new Intl.DateTimeFormat('zh-CN', {
+  month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false,
+})
+
+const mastheadWeekday = new Intl.DateTimeFormat('zh-CN', { weekday: 'short' })
+
+function formatShortDate(value) {
+  if (!value) return ''
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? '' : shortScheduleDate.format(date)
+}
+
+function formatMastheadDateline(now = new Date()) {
+  const y = now.getFullYear()
+  const m = String(now.getMonth() + 1).padStart(2, '0')
+  const d = String(now.getDate()).padStart(2, '0')
+  return `${y}.${m}.${d} · ${mastheadWeekday.format(now)}`
+}
+
 function DraftArtwork({ draft }) {
   const [failed, setFailed] = React.useState(false)
+  const issueNo = draft.issueNo ?? '01'
+  const stamp = draft.archivedAt ? '已归档'
+    : draft.publishedAt ? '已发表'
+      : (draft.review ?? 0) > 0 ? '改稿打磨中'
+        : '待配封面'
+  const tone = draft.archivedAt ? 'is-archived'
+    : (draft.review ?? 0) > 0 ? 'is-review'
+      : 'is-pending'
   return (
     <div className="ws-draft-art">
       {draft.coverId && !failed ? (
         <img src={`wechat-studio/cover/image?${new URLSearchParams({ id: draft.id, asset: draft.coverId })}`}
           alt="" loading="lazy" onError={() => setFailed(true)} />
-      ) : <span aria-hidden="true">{draft.title}</span>}
+      ) : (
+        <div className={`ws-draft-typo ${tone}`} aria-hidden="true">
+          <div className="ws-draft-typo-top">
+            <span>{draft.archivedAt ? 'ARCHIVED' : 'DRAFT'} · NO.{issueNo}</span>
+            <span>约 {readMinutes(draft.chars)} MIN</span>
+          </div>
+          <div className="ws-draft-typo-mid">
+            <span className="ws-draft-typo-num">{issueNo}</span>
+            <span className="ws-draft-typo-stamp">{stamp}</span>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
 
+function DraftStatusBadge({ draft }) {
+  if (draft.archivedAt) return <span className="ws-dh-badge is-muted">已归档</span>
+  if (draft.publishedAt) return <span className="ws-dh-badge is-ready">已发表</span>
+  if ((draft.review ?? 0) > 0) return <span className="ws-dh-badge is-review">{draft.review} 段待检查</span>
+  if (draft.scheduledFor) return <span className="ws-dh-badge is-sched">排期 · {formatShortDate(draft.scheduledFor)}</span>
+  if (isDraftReady(draft)) return <span className="ws-dh-badge is-ready">已就绪</span>
+  const items = draft.readiness?.items
+  if (!items?.length) return null
+  return (
+    <span className="ws-dh-dots" title={`发车就绪度 ${draft.readiness.done}/${draft.readiness.total}`}>
+      {items.map(item => <i key={item.id} className={`ws-dh-dot ${item.done ? 'is-done' : ''}`} title={item.label} />)}
+    </span>
+  )
+}
+
+const DRAFT_HOME_TABS = [
+  ['all', '全部稿件'],
+  ['review', '待质检'],
+  ['ready', '已就绪'],
+  ['archived', '已归档'],
+]
+
 function DraftHome({ data }) {
   const [query, setQuery] = React.useState('')
-  const [showArchived, setShowArchived] = React.useState(false)
+  const [filter, setFilter] = React.useState('all')
   const pending = useStudio(s => s.pending)
-  const active = data.articles.filter(item => !item.archivedAt)
-  const archived = data.articles.filter(item => item.archivedAt).sort((a, b) => b.archivedAt.localeCompare(a.archivedAt))
-  const drafts = showArchived ? archived : active
-  const featured = drafts.find(item => item.id === data.current?.id) ?? drafts[0]
-  const terms = query.normalize('NFKC').trim().toLowerCase().split(/\s+/).filter(Boolean)
-  const matches = drafts.filter(draft => terms.every(term => draft.title.normalize('NFKC').toLowerCase().includes(term)))
-  const open = async draft => {
+  const { stats, filterCounts, nextScheduled, featured, items: matches, hasQuery } = React.useMemo(
+    () => summarizeDraftHome(data.articles, { currentId: data.current?.id, filter, query }),
+    [data.articles, data.current?.id, filter, query],
+  )
+  const showArchived = filter === 'archived'
+  const open = async (draft, targetView = null) => {
     if (pending) return
     if (draft.id !== data.current?.id && !await act('articles/select', { id: draft.id })) return
-    setState({ paperHome: false, view: draft.lastView === 'layout' ? 'layout' : 'paper', editing: null })
+    const nextView = targetView ?? (draft.lastView === 'layout' ? 'layout' : 'paper')
+    setState({ paperHome: false, view: nextView, editing: null })
   }
   const move = async draft => {
     if (pending) return
@@ -2257,59 +2329,172 @@ function DraftHome({ data }) {
     const date = new Date(draft.updatedAt)
     return Number.isNaN(date.getTime()) ? '' : draftDate.format(date)
   }
+  const emptyText = hasQuery
+    ? '没有找到匹配的稿件。'
+    : filter === 'archived'
+      ? '还没有归档稿件。'
+      : filter === 'review'
+        ? '目前没有待质检处理的稿件。'
+        : filter === 'ready'
+          ? '还没有 5 项全就绪的待发稿件。'
+          : '还没有在写的稿件。可以新建文章，或从「已归档」恢复旧稿。'
   return (
     <main className="ws-draft-home">
-      <header className="ws-draft-home-head">
-        <div><h1>稿面</h1><p className="ws-muted">{active.length} 篇稿件 · {archived.length} 篇已归档</p></div>
-        <div className="ws-draft-home-tools">
-          <input type="search" aria-label="搜索稿件标题" placeholder="搜索稿件标题…" value={query} onChange={e => setQuery(e.target.value)} />
-          <button type="button" className="ws-btn is-primary" onClick={() => setState({ dialog: 'new' })}><Icon name="plus" />新建文章</button>
-        </div>
-      </header>
-      {!showArchived && featured && !terms.length ? (
-        <section className="ws-draft-feature">
-          <div className="ws-draft-feature-copy">
-            <span className="ws-muted ws-small">{featured.id === data.current?.id ? '上次打开' : '最近编辑'}</span>
-            <h2>{featured.title}</h2>
-            <p className="ws-muted ws-small">{[edited(featured), `${featured.chars} 字`].filter(Boolean).join(' · ')}</p>
-            <button type="button" className="ws-btn is-primary" disabled={Boolean(pending)} onClick={() => open(featured)}>{featured.lastView === 'layout' ? '继续排版' : '继续改稿'} <span aria-hidden="true">→</span></button>
+      <div className="ws-dh-shell">
+        <header className="ws-dh-masthead">
+          <div className="ws-dh-masthead-left">
+            <span className="ws-dh-kicker">EDITORIAL DESK · 公众号成稿台</span>
+            <div className="ws-dh-title-row">
+              <h1>稿面</h1>
+              <p className="ws-dh-dateline">
+                <b>VOL.{String(stats.activeCount).padStart(2, '0')}</b>
+                <span aria-hidden="true">/</span>
+                <span>{formatMastheadDateline()}</span>
+              </p>
+            </div>
           </div>
-          <DraftArtwork key={featured.coverId || featured.id} draft={featured} />
-        </section>
-      ) : null}
-      <section className="ws-draft-shelf" aria-label={showArchived ? '已归档' : '全部稿件'}>
-        <div className="ws-sec-head">
-          <div className="ws-draft-filters" role="group" aria-label="稿件分类">
-            <button type="button" className="ws-btn" aria-pressed={!showArchived} onClick={() => setShowArchived(false)}>全部稿件</button>
-            <button type="button" className="ws-btn" aria-pressed={showArchived} onClick={() => setShowArchived(true)}>已归档 <span>{archived.length}</span></button>
+          <div className="ws-draft-home-tools">
+            <label className="ws-dh-search">
+              <Icon name="search" size={14} />
+              <input type="search" aria-label="搜索稿件标题" placeholder="搜索稿件标题…" value={query} onChange={e => setQuery(e.target.value)} />
+            </label>
+            <button type="button" className="ws-btn is-primary" onClick={() => setState({ dialog: 'new' })}><Icon name="plus" />新建文章</button>
           </div>
-          <span className="ws-muted ws-small">{terms.length ? `找到 ${matches.length} 篇` : showArchived ? '按归档时间排序' : '按最近编辑排序'}</span>
-        </div>
-        {matches.length ? (
-          <div className="ws-draft-grid">
-            {matches.map(draft => (
-              <article className="ws-draft-card" key={draft.id}>
-                <div className="ws-draft-card-main">
-                  <DraftArtwork key={draft.coverId || draft.id} draft={draft} />
-                  <div className="ws-draft-card-copy">
-                    {showArchived ? <strong>{draft.title}</strong> : (
-                      <button type="button" className="ws-draft-open" disabled={Boolean(pending)} onClick={() => open(draft)}>{draft.title}</button>
-                    )}
-                    <span className="ws-muted ws-small">{[edited(draft), `${draft.chars} 字`].filter(Boolean).join(' · ')}</span>
-                    {draft.review || draft.checked ? <span className="ws-draft-review">{draft.review ? `${draft.review} 段待检查` : '已质检'}</span> : null}
+        </header>
+
+        {filter === 'all' && !hasQuery && featured ? (
+          <section className="ws-dh-top" aria-label="头版稿件与创作概览">
+            <article className="ws-dh-hero">
+              <div className="ws-dh-hero-copy">
+                <div className="ws-dh-hero-eyebrow">
+                  <span className="ws-dh-issue-tag">ISSUE NO.{featured.issueNo}</span>
+                  <span>{featured.id === data.current?.id ? '上次打开' : '最近编辑'} · {featured.lastView === 'layout' ? '停在排版预览' : '停在稿面改稿'}</span>
+                  {featured.scheduledFor && !featured.publishedAt ? <span>· 排期 {formatShortDate(featured.scheduledFor)}</span> : null}
+                </div>
+                <h2>{featured.title}</h2>
+                <p className="ws-dh-hero-meta">
+                  {[edited(featured), `${featured.chars.toLocaleString()} 字（约 ${readMinutes(featured.chars)} 分钟阅读）`].filter(Boolean).join(' · ')}
+                </p>
+                {featured.readiness?.items?.length ? (
+                  <div className="ws-dh-ready-pills" aria-label={`发车就绪度 ${featured.readiness.done}/${featured.readiness.total}`}>
+                    {featured.readiness.items.map(step => (
+                      <span key={step.id} className={`ws-dh-ready-pill ${step.done ? 'is-done' : ''}`}>
+                        <i aria-hidden="true" />{step.label}
+                      </span>
+                    ))}
                   </div>
+                ) : null}
+                <div className="ws-dh-hero-actions">
+                  <button type="button" className="ws-btn is-primary" disabled={Boolean(pending)} onClick={() => open(featured)}>
+                    {featured.lastView === 'layout' ? '继续排版' : '继续改稿'} <span aria-hidden="true">→</span>
+                  </button>
+                  <button type="button" className="ws-btn" disabled={Boolean(pending)}
+                    onClick={() => open(featured, featured.lastView === 'layout' ? 'paper' : 'layout')}>
+                    {featured.lastView === 'layout' ? '回到稿面改稿' : '打开排版预览'}
+                  </button>
                 </div>
-                <div className="ws-draft-card-actions">
-                  <button type="button" className="ws-btn" disabled={Boolean(pending)} onClick={() => duplicate(draft)}
-                    aria-label={`创建副本：${draft.title}`}>创建副本</button>
-                  <button type="button" className="ws-btn" disabled={Boolean(pending)} onClick={() => move(draft)}
-                    aria-label={`${showArchived ? '恢复' : '归档'}：${draft.title}`}>{showArchived ? '恢复稿件' : '归档'}</button>
+              </div>
+              <div className="ws-dh-hero-art">
+                <DraftArtwork key={featured.coverId || featured.id} draft={featured} />
+              </div>
+            </article>
+
+            <aside className="ws-dh-stats" aria-label="创作概览">
+              <div className="ws-dh-stats-head">
+                <span>创作概览</span>
+                <span className={`ws-dh-stats-note ${stats.readyCount > 0 ? 'is-ok' : ''}`}>
+                  {stats.readyCount > 0 ? `${stats.readyCount} 篇可发车` : '打磨中'}
+                </span>
+              </div>
+              <div className="ws-dh-kpi-grid">
+                <button type="button" className="ws-dh-kpi" onClick={() => setFilter('all')}>
+                  <b>{stats.activeCount}</b>
+                  <span>在写稿件</span>
+                </button>
+                <button type="button" className="ws-dh-kpi is-ok" onClick={() => setFilter('ready')}>
+                  <b>{stats.readyCount}</b>
+                  <span>已就绪可发</span>
+                </button>
+                <button type="button" className="ws-dh-kpi is-warn" onClick={() => setFilter('review')}>
+                  <b>{stats.reviewCount}</b>
+                  <span>待处理质检</span>
+                </button>
+                <button type="button" className="ws-dh-kpi is-accent" onClick={() => setState({ module: 'schedule' })}>
+                  <b>{stats.scheduledCount}</b>
+                  <span>已排期</span>
+                </button>
+              </div>
+              <div className="ws-dh-upnext">
+                <div className="ws-dh-upnext-head">
+                  <small className={nextScheduled?.overdue ? 'is-overdue' : ''}>
+                    {nextScheduled
+                      ? `${nextScheduled.overdue ? '已过点待确认' : '下一班排期'} · ${formatShortDate(nextScheduled.draft.scheduledFor)}`
+                      : '下一班排期发车'}
+                  </small>
+                  {nextScheduled ? (
+                    <button type="button" className="ws-dh-upnext-link" disabled={Boolean(pending)} onClick={() => open(nextScheduled.draft)}>
+                      打开 →
+                    </button>
+                  ) : (
+                    <button type="button" className="ws-dh-upnext-link" onClick={() => setState({ module: 'schedule' })}>
+                      去排期 →
+                    </button>
+                  )}
                 </div>
-              </article>
-            ))}
+                {nextScheduled ? (
+                  <button type="button" className="ws-dh-upnext-title" title={nextScheduled.draft.title} disabled={Boolean(pending)} onClick={() => open(nextScheduled.draft)}>
+                    {nextScheduled.draft.title}
+                  </button>
+                ) : (
+                  <p className="ws-dh-upnext-empty ws-muted">暂无排期稿件</p>
+                )}
+              </div>
+            </aside>
+          </section>
+        ) : null}
+
+        <section className="ws-draft-shelf" aria-label={DRAFT_HOME_TABS.find(([id]) => id === filter)?.[1] ?? '全部稿件'}>
+          <div className="ws-dh-shelf-head">
+            <div className="ws-dh-tabs" role="tablist" aria-label="稿件分类">
+              {DRAFT_HOME_TABS.map(([id, label]) => (
+                <button key={id} type="button" role="tab" aria-selected={filter === id} className={`ws-dh-tab ${filter === id ? 'is-on' : ''}`}
+                  onClick={() => setFilter(id)}>
+                  {label}<span>{filterCounts[id]}</span>
+                </button>
+              ))}
+            </div>
+            <span className="ws-muted ws-small">
+              {hasQuery ? `找到 ${matches.length} 篇` : showArchived ? '按归档时间排序' : '按最近编辑排序 · 悬浮卡片可复制或归档'}
+            </span>
           </div>
-        ) : <p className="ws-draft-home-empty ws-muted">{terms.length ? '没有找到匹配的稿件。' : showArchived ? '还没有归档稿件。' : '还没有在写的稿件。可以新建文章，或从「已归档」恢复旧稿。'}</p>}
-      </section>
+          {matches.length ? (
+            <div className="ws-draft-grid">
+              {matches.map(draft => (
+                <article className="ws-draft-card" key={draft.id}>
+                  <div className="ws-draft-card-actions">
+                    <button type="button" className="ws-dh-action-chip" disabled={Boolean(pending)} onClick={() => duplicate(draft)}
+                      aria-label={`创建副本：${draft.title}`}>创建副本</button>
+                    <button type="button" className="ws-dh-action-chip" disabled={Boolean(pending)} onClick={() => move(draft)}
+                      aria-label={`${showArchived ? '恢复' : '归档'}：${draft.title}`}>{showArchived ? '恢复稿件' : '归档'}</button>
+                  </div>
+                  <div className="ws-draft-card-main">
+                    <DraftArtwork key={draft.coverId || draft.id} draft={draft} />
+                    <div className="ws-draft-card-copy">
+                      {showArchived ? <strong className="ws-draft-card-title">{draft.title}</strong> : (
+                        <button type="button" className="ws-draft-open" disabled={Boolean(pending)} onClick={() => open(draft)}>{draft.title}</button>
+                      )}
+                      <div className="ws-draft-card-foot">
+                        <span className="ws-muted ws-small">{[formatShortDate(draft.updatedAt), `${draft.chars} 字`].filter(Boolean).join(' · ')}</span>
+                        <DraftStatusBadge draft={draft} />
+                      </div>
+                    </div>
+                  </div>
+                </article>
+              ))}
+            </div>
+          ) : <p className="ws-draft-home-empty ws-muted">{emptyText}</p>}
+        </section>
+      </div>
     </main>
   )
 }

@@ -666,10 +666,13 @@ export function InsightsView() {
   const onFile = e => { const file = e.target.files?.[0]; e.target.value = ''; if (file) importInsights(file) }
 
   const head = (
-    <header className="ws-ins-head">
-      <div className="ws-ins-head-copy">
-        <h1 className="ws-page-title">复盘</h1>
-        <p className="ws-page-lead">导入公众号后台导出的数据，看哪种写法读的人更多。单篇阅读是导出窗口内的合计，不是历史总阅读。</p>
+    <header className="ws-dh-masthead">
+      <div className="ws-dh-masthead-left">
+        <span className="ws-dh-kicker">ANALYTICS &amp; REVIEW · 数据复盘</span>
+        <div className="ws-dh-title-row">
+          <h1>复盘</h1>
+          <p className="ws-dh-dateline"><span>单篇阅读为导出窗口内合计，非历史总阅读</span></p>
+        </div>
       </div>
       <div className="ws-ins-tools">
         <button type="button" className="ws-btn is-primary" disabled={pending === 'insights/import'} onClick={() => fileRef.current?.click()}>
@@ -680,19 +683,21 @@ export function InsightsView() {
     </header>
   )
 
-  if (!insights && !insightsError) return <div className="ws-page ws-ins">{head}<div className="ws-center"><span className="ws-shimmer">正在读取复盘数据…</span></div></div>
-  if (!insights) return <div className="ws-page ws-ins">{head}<div className="ws-center"><p className="ws-muted">读取失败：{insightsError}</p><button type="button" className="ws-btn" onClick={() => loadInsights()}>重试</button></div></div>
+  if (!insights && !insightsError) return <main className="ws-page"><div className="ws-dh-shell ws-ins">{head}<div className="ws-center"><span className="ws-shimmer">正在读取复盘数据…</span></div></div></main>
+  if (!insights) return <main className="ws-page"><div className="ws-dh-shell ws-ins">{head}<div className="ws-center"><p className="ws-muted">读取失败：{insightsError}</p><button type="button" className="ws-btn" onClick={() => loadInsights()}>重试</button></div></div></main>
 
   if (!insights.hasData) {
     return (
-      <div className="ws-page ws-ins">
-        {head}
-        <div className="ws-ins-onboard">
-          <Icon name="insights" size={28} />
-          <h2>先导入一份后台导出</h2>
-          <p>在公众号后台导出「数据趋势」「用户增长」或某篇文章的「数据明细」，再选择对应的 .xls 文件。</p>
+      <main className="ws-page">
+        <div className="ws-dh-shell ws-ins">
+          {head}
+          <div className="ws-ins-onboard">
+            <Icon name="insights" size={28} />
+            <h2>先导入一份后台导出</h2>
+            <p>在公众号后台导出「数据趋势」「用户增长」或某篇文章的「数据明细」，再选择对应的 .xls 文件。</p>
+          </div>
         </div>
-      </div>
+      </main>
     )
   }
 
@@ -714,8 +719,9 @@ export function InsightsView() {
   ].filter(([, value]) => value != null)
 
   return (
-    <div className="ws-page ws-ins">
-      {head}
+    <main className="ws-page">
+      <div className="ws-dh-shell ws-ins">
+        {head}
       <ReviewHighlights details={details} rows={insights.articles} range={range === 'all' ? null : insights.articleRange}
         onOpen={openDetail} onImport={() => fileRef.current?.click()} />
       {experiments.length ? <section className="ws-ins-block ws-ins-experiments">
@@ -805,6 +811,7 @@ export function InsightsView() {
 
       {selectedDetail ? <DetailDialog key={selectedDetail.key} detail={selectedDetail} details={details} drafts={insights.drafts} experiments={experiments} targets={insights.detailTargets} pending={pending} initialSection={detailView.section} initialPeer={detailView.peer} initialExperiment={detailView.experiment} onClose={() => setDetailView(null)} /> : null}
       {preview ? <RuleDialog preview={preview} pending={pending} /> : null}
-    </div>
+      </div>
+    </main>
   )
 }

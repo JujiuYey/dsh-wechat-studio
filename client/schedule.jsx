@@ -391,64 +391,78 @@ export function ScheduleView({ data }) {
   const publish = draft => setPublishDraft(draft)
   return (
     <main className="ws-sched">
-      <header className="ws-sched-head">
-        <div><h1>排期</h1><p className="ws-muted">{dock.length} 篇待排 · 所选周计划内已发 {weekPublished} 篇 · {zoneLabel(today)}</p></div>
-        <div className="ws-sched-weeknav">
-          <button type="button" className="ws-btn" onClick={() => setWeekKey(dayKey(addDays(monday, -7)))}>上一周</button>
-          <button type="button" className="ws-btn" disabled={weekKey === currentWeekKey} onClick={() => setWeekKey(dayKey(mondayOf(new Date(now))))}>回到本周</button>
-          <button type="button" className="ws-btn" onClick={() => setWeekKey(dayKey(addDays(monday, 7)))}>下一周</button>
-          <span className="ws-muted ws-small">{days[0].getMonth() + 1} 月 {days[0].getDate()} 日 – {days[6].getMonth() + 1} 月 {days[6].getDate()} 日</span>
-        </div>
-      </header>
-      <div className="ws-sched-body">
-        <aside className={`ws-sched-dock ${dockExpanded ? 'is-expanded' : ''}`} aria-label="待排稿件"
-          onDragOver={e => { e.preventDefault(); e.dataTransfer.dropEffect = 'move' }}
-          onDrop={e => { e.preventDefault(); dropOnDock(e.dataTransfer.getData('text/plain')) }}>
-          <h2 className="ws-pane-title">待排 <span>{dock.length}</span><small>就绪 {readyDock.length}</small></h2>
-          <button type="button" className="ws-sched-dock-toggle" aria-expanded={dockExpanded} aria-controls="ws-sched-dock-content" onClick={() => setDockExpanded(value => !value)}>待排 {dock.length} 篇 · 就绪 {readyDock.length} 篇<Icon name="chevron" size={14} /></button>
-          <div className="ws-sched-dock-content" id="ws-sched-dock-content">
-            {dock.length ? <div className="ws-sched-dock-tools">
-              <input type="search" aria-label="搜索待排稿件" placeholder="搜索稿件" value={dockQuery} onChange={event => setDockQuery(event.target.value)} />
-              <div className="ws-sched-dock-filters" role="group" aria-label="待排就绪筛选">
-                <button type="button" aria-pressed={dockFilter === 'all'} className={dockFilter === 'all' ? 'is-on' : ''} onClick={() => setDockFilter('all')}>全部</button>
-                <button type="button" aria-pressed={dockFilter === 'ready'} className={dockFilter === 'ready' ? 'is-on' : ''} onClick={() => setDockFilter('ready')}>就绪</button>
-              </div>
-              <span className="ws-muted ws-small" role="status">显示 {visibleDock.length} / {dock.length} 篇</span>
-            </div> : null}
-            {visibleDock.map(d => <DockCard key={d.id} draft={d} onPick={pickFor} onDragStart={dragStart} onDragEnd={() => setOverDay(null)} />)}
-            {dock.length && !visibleDock.length ? <div className="ws-muted ws-small"><p>没有匹配的待排稿件。</p><button type="button" className="ws-link" onClick={() => { setDockQuery(''); setDockFilter('all') }}>清空搜索与筛选</button></div> : null}
-            {!dock.length ? <div className="ws-muted ws-small">
-              <p>{!active.length ? '还没有稿件，先写一篇再来排期。' : scheduled.length ? '没有待排稿件，可从日历改期或取消。' : '当前没有待排稿件。'}</p>
-              {!active.length ? <button type="button" className="ws-link" onClick={() => setState({ module: 'paper', paperHome: true })}>去写第一篇</button> : null}
-            </div> : null}
-            <p className="ws-muted ws-small ws-sched-dock-hint">拖到某天默认排到晚 20:00；已排稿件改期保留原时分。</p>
+      <div className="ws-dh-shell">
+        <header className="ws-dh-masthead">
+          <div className="ws-dh-masthead-left">
+            <span className="ws-dh-kicker">PUBLISH SCHEDULE · 发布日历</span>
+            <div className="ws-dh-title-row">
+              <h1>排期</h1>
+              <p className="ws-dh-dateline">
+                <span><b>{dock.length}</b> 篇待排</span>
+                <span aria-hidden="true">·</span>
+                <span>所选周已发 <b>{weekPublished}</b> 篇</span>
+                <span aria-hidden="true">·</span>
+                <span>{zoneLabel(today)}</span>
+              </p>
+            </div>
           </div>
-        </aside>
-        <section className="ws-sched-main" aria-label="排期议程与周日历">
-          <ScheduleAgenda scheduled={scheduled} now={now} onPublish={publish} onReschedule={pickFor} onUnschedule={unschedule} onLocate={locate} />
-          {scheduleNotice ? <div className="ws-sched-notice" role="status">{scheduleNotice.text}<button type="button" className="ws-link" onClick={() => { setWeekKey(scheduleNotice.targetWeek); setScheduleNotice(null) }}>查看当周</button></div> : null}
-          {!scheduled.length && !published.length ? <p className="ws-muted ws-small">还没有排期，从待排稿件选一篇，或点某日的「＋」。</p> : null}
-          <div className="ws-sched-week">
-            {days.map(date => {
-              const key = dayKey(date)
-              const rows = byDay(key)
-              return (
-                <div key={key} className={`ws-sched-day ${key === dayKey(today) ? 'is-today' : ''} ${overDay === key ? 'is-over' : ''}`}
-                  onDragOver={e => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; setOverDay(key) }}
-                  onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget)) setOverDay(current => current === key ? null : current) }}
-                  onDrop={e => { e.preventDefault(); dropOnDay(e.dataTransfer.getData('text/plain'), key) }}>
-                  <header className="ws-sched-day-head"><span>{weekdayName(date)} <b>{date.getMonth() + 1}/{date.getDate()}</b></span><button type="button" className="ws-icon-btn" aria-label={`在 ${key} 排一篇`} title="排一篇" onClick={() => setPicker({ id: null, day: key })}><Icon name="plus" size={14} /></button></header>
-                  <div className="ws-sched-day-list">
-                    {rows.map(d => d.publishedAt
-                      ? <PublishedCard key={d.id} draft={d} onCorrect={publish} onUnpublish={unpublishDraft} />
-                      : <ScheduledCard key={d.id} draft={d} now={now} onPick={pickFor} onUnschedule={unschedule} onPublish={publish} onDragStart={dragStart} onDragEnd={() => setOverDay(null)} />)}
-                    {!rows.length ? <span className="ws-sched-empty">暂无安排</span> : null}
-                  </div>
+          <div className="ws-sched-weeknav">
+            <button type="button" className="ws-btn" onClick={() => setWeekKey(dayKey(addDays(monday, -7)))}>上一周</button>
+            <button type="button" className="ws-btn" disabled={weekKey === currentWeekKey} onClick={() => setWeekKey(dayKey(mondayOf(new Date(now))))}>回到本周</button>
+            <button type="button" className="ws-btn" onClick={() => setWeekKey(dayKey(addDays(monday, 7)))}>下一周</button>
+            <span className="ws-muted ws-small">{days[0].getMonth() + 1} 月 {days[0].getDate()} 日 – {days[6].getMonth() + 1} 月 {days[6].getDate()} 日</span>
+          </div>
+        </header>
+        <div className="ws-sched-body">
+          <aside className={`ws-sched-dock ${dockExpanded ? 'is-expanded' : ''}`} aria-label="待排稿件"
+            onDragOver={e => { e.preventDefault(); e.dataTransfer.dropEffect = 'move' }}
+            onDrop={e => { e.preventDefault(); dropOnDock(e.dataTransfer.getData('text/plain')) }}>
+            <h2 className="ws-pane-title">待排 <span>{dock.length}</span><small>就绪 {readyDock.length}</small></h2>
+            <button type="button" className="ws-sched-dock-toggle" aria-expanded={dockExpanded} aria-controls="ws-sched-dock-content" onClick={() => setDockExpanded(value => !value)}>待排 {dock.length} 篇 · 就绪 {readyDock.length} 篇<Icon name="chevron" size={14} /></button>
+            <div className="ws-sched-dock-content" id="ws-sched-dock-content">
+              {dock.length ? <div className="ws-sched-dock-tools">
+                <input type="search" aria-label="搜索待排稿件" placeholder="搜索稿件" value={dockQuery} onChange={event => setDockQuery(event.target.value)} />
+                <div className="ws-sched-dock-filters" role="group" aria-label="待排就绪筛选">
+                  <button type="button" aria-pressed={dockFilter === 'all'} className={dockFilter === 'all' ? 'is-on' : ''} onClick={() => setDockFilter('all')}>全部</button>
+                  <button type="button" aria-pressed={dockFilter === 'ready'} className={dockFilter === 'ready' ? 'is-on' : ''} onClick={() => setDockFilter('ready')}>就绪</button>
                 </div>
-              )
-            })}
-          </div>
-        </section>
+                <span className="ws-muted ws-small" role="status">显示 {visibleDock.length} / {dock.length} 篇</span>
+              </div> : null}
+              {visibleDock.map(d => <DockCard key={d.id} draft={d} onPick={pickFor} onDragStart={dragStart} onDragEnd={() => setOverDay(null)} />)}
+              {dock.length && !visibleDock.length ? <div className="ws-muted ws-small"><p>没有匹配的待排稿件。</p><button type="button" className="ws-link" onClick={() => { setDockQuery(''); setDockFilter('all') }}>清空搜索与筛选</button></div> : null}
+              {!dock.length ? <div className="ws-muted ws-small">
+                <p>{!active.length ? '还没有稿件，先写一篇再来排期。' : scheduled.length ? '没有待排稿件，可从日历改期或取消。' : '当前没有待排稿件。'}</p>
+                {!active.length ? <button type="button" className="ws-link" onClick={() => setState({ module: 'paper', paperHome: true })}>去写第一篇</button> : null}
+              </div> : null}
+              <p className="ws-muted ws-small ws-sched-dock-hint">拖到某天默认排到晚 20:00；已排稿件改期保留原时分。</p>
+            </div>
+          </aside>
+          <section className="ws-sched-main" aria-label="排期议程与周日历">
+            <ScheduleAgenda scheduled={scheduled} now={now} onPublish={publish} onReschedule={pickFor} onUnschedule={unschedule} onLocate={locate} />
+            {scheduleNotice ? <div className="ws-sched-notice" role="status">{scheduleNotice.text}<button type="button" className="ws-link" onClick={() => { setWeekKey(scheduleNotice.targetWeek); setScheduleNotice(null) }}>查看当周</button></div> : null}
+            {!scheduled.length && !published.length ? <p className="ws-muted ws-small">还没有排期，从待排稿件选一篇，或点某日的「＋」。</p> : null}
+            <div className="ws-sched-week">
+              {days.map(date => {
+                const key = dayKey(date)
+                const rows = byDay(key)
+                return (
+                  <div key={key} className={`ws-sched-day ${key === dayKey(today) ? 'is-today' : ''} ${overDay === key ? 'is-over' : ''}`}
+                    onDragOver={e => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; setOverDay(key) }}
+                    onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget)) setOverDay(current => current === key ? null : current) }}
+                    onDrop={e => { e.preventDefault(); dropOnDay(e.dataTransfer.getData('text/plain'), key) }}>
+                    <header className="ws-sched-day-head"><span>{weekdayName(date)} <b>{date.getMonth() + 1}/{date.getDate()}</b></span><button type="button" className="ws-icon-btn" aria-label={`在 ${key} 排一篇`} title="排一篇" onClick={() => setPicker({ id: null, day: key })}><Icon name="plus" size={14} /></button></header>
+                    <div className="ws-sched-day-list">
+                      {rows.map(d => d.publishedAt
+                        ? <PublishedCard key={d.id} draft={d} onCorrect={publish} onUnpublish={unpublishDraft} />
+                        : <ScheduledCard key={d.id} draft={d} now={now} onPick={pickFor} onUnschedule={unschedule} onPublish={publish} onDragStart={dragStart} onDragEnd={() => setOverDay(null)} />)}
+                      {!rows.length ? <span className="ws-sched-empty">暂无安排</span> : null}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          </section>
+        </div>
       </div>
       {picker ? <SchedulePicker data={data} picker={picker} onClose={() => setPicker(null)} onSave={saveSchedule} onSaved={notifySchedule} /> : null}
       {publishDraft ? <PublishDialog draft={publishDraft} now={now} onClose={() => setPublishDraft(null)} onSave={savePublication} /> : null}
