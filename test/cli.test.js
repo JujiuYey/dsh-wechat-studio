@@ -885,7 +885,7 @@ test('回归修复：并发 settings 写锁、损坏保护、style/theme 暴露�
   }
 })
 
-test('check 子命令与 draft push 统一 preflight 契约：标题 32 字阻断、外链不阻断、自定义词与失败 JSON', async () => {
+test('check 子命令与 draft push 统一 preflight 契约：普通体检 33–64 字提醒超 64 字阻断，草稿推送 32 字阻断', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'ws-cli-check-'))
   const tokenKey = ['access', 'token'].join('_')
   const mpSecFlag = ['--mp', 'app', 'secret'].join('-')
@@ -946,12 +946,21 @@ test('check 子命令与 draft push 统一 preflight 契约：标题 32 字阻�
     assert.equal(pushWarnRes.mediaId, 'draft-w')
     assert.deepEqual(pushWarnRes.preflight.counts, dryWarnRes.preflight.counts)
 
-    // 4. 33 字超长标题：check --fail-on-blocking 返回退出码 1 与完整结构化 JSON；draft push 拦截（0 请求），--title 覆盖或 --force 放行
+    // 4. 33 字标题：check 仅做提醒（不阻断），65 字标题 check --fail-on-blocking 返回退出码 1；draft push 仍按 32 字阻断（0 请求），--title 覆盖或 --force 放行
     const longTitleMd = join(dir, 'long-title.md')
     await writeFile(longTitleMd, `# ${'标'.repeat(33)}\n\n正文内容。\n`, 'utf8')
+    const over64Md = join(dir, 'over64-title.md')
+    await writeFile(over64Md, `# ${'标'.repeat(65)}\n\n正文内容。\n`, 'utf8')
+
+    const checkWarn33Io = makeIo()
+    assert.equal(await runCli(['check', longTitleMd, '--fail-on-blocking', '--data-dir', dir, '--json'], checkWarn33Io), 0)
+    const checkWarn33Res = JSON.parse(checkWarn33Io.read().out)
+    assert.equal(checkWarn33Res.ok, true)
+    assert.equal(checkWarn33Res.counts.blocking, 0)
+    assert.ok(checkWarn33Res.items.some(i => i.id === 'title-draft-limit' && i.severity === 'warn'))
 
     const checkBlockIo = makeIo()
-    assert.equal(await runCli(['check', longTitleMd, '--fail-on-blocking', '--data-dir', dir, '--json'], checkBlockIo), 1)
+    assert.equal(await runCli(['check', over64Md, '--fail-on-blocking', '--data-dir', dir, '--json'], checkBlockIo), 1)
     const checkBlockRes = JSON.parse(checkBlockIo.read().out)
     assert.equal(checkBlockRes.ok, false)
     assert.equal(checkBlockRes.code, 'PREFLIGHT_BLOCKED')

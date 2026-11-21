@@ -178,7 +178,7 @@ const SUB_HELP = {
 说明: 零模型成本、确定性的发布防踩坑体检（外链/文字墙/合规词仅提醒，绝不阻断发布）。
 选项:
   --title <text>                       覆盖待检查的标题（默认取 Markdown 一级标题）
-  --fail-on-blocking                   存在阻断项（媒体/占位/空标题/超 32 字标题）时以退出码 1 结束
+  --fail-on-blocking                   存在阻断项（媒体/占位/空标题/超 64 字标题）时以退出码 1 结束
   --data-dir <path>                    指定工作区目录（读取 fixedLines 与 preflightWords）
   --json                               输出单行结构化 JSON`,
 
@@ -1011,7 +1011,7 @@ async function handleDraft(argv, io, secrets) {
       : (rendered.title || '未命名')
     const preflight = runPreflight(
       { title, markdown },
-      { fixedLines: settings.fixedLines, customWords: settings.preflightWords, layoutIssues: rendered.issues },
+      { fixedLines: settings.fixedLines, customWords: settings.preflightWords, layoutIssues: rendered.issues, titleTarget: 'draft' },
     )
     const blockingItems = preflight.items.filter(item => item.severity === 'blocking')
     const blockingMessages = blockingItems.map(item => item.title)

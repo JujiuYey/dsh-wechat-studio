@@ -3,14 +3,15 @@
 // AppSecret 只存在本机 settings.json（600 权限），接口从不回传明文。
 import { deflateSync } from 'node:zlib'
 import { isIP } from 'node:net'
+import { deriveDigest, latestCover, MAX_TITLE, sliceUtf16Safe } from './wechat-meta.js'
+
+export { latestCover }
 
 const API = 'https://api.weixin.qq.com'
 
 const TIMEOUT_MS = 30_000
 // 微信 /cgi-bin/media/uploadimg 只收 1MB 内的 JPG/PNG（不支持 GIF）
 const MAX_CONTENT_IMAGE_BYTES = 1_000_000
-// 微信 draft/add 的 title 上限是 32 字
-const MAX_TITLE = 32
 const MAX_CONTENT_IMAGES = 50
 const MAX_REDIRECTS = 3
 
@@ -254,14 +255,7 @@ export function placeholderPng(width = 900, height = 383, [r, g, b] = [37, 42, 3
   ])
 }
 
-/** 选这篇稿子要推送的封面图：优先用户「设为当前封面」选中的 article.cover，没有再回退到最新一批的最后一张；都没有返回 null（推送时画占位图）。 */
-export function latestCover(article) {
-  if (article.cover?.id) return { id: article.cover.id, format: article.cover.format ?? 'png' }
-  const runs = (article.coverRuns ?? []).filter(run => run.images?.length)
-  if (!runs.length) return null
-  const run = runs.at(-1)
-  return { id: run.images.at(-1).id, format: run.format ?? 'png' }
-}
+
 
 /**
  * 把排版好的 HTML 推到公众号草稿箱。
@@ -298,9 +292,9 @@ export async function pushWechatDraft({ article, html, settings, cover = null, f
 
   const payload = {
     articles: [{
-      title: String(article.title ?? '未命名').slice(0, MAX_TITLE),
-      author: String(settings.brand?.author ?? '').slice(0, 16),
-      digest: '',
+      title: sliceUtf16Safe(String(article.title ?? '未命名'), MAX_TITLE),
+      author: sliceUtf16Safe(String(settings.brand?.author ?? ''), 16),
+      digest: deriveDigest(article).text,
       content: rewritten,
       content_source_url: '',
       thumb_media_id: thumb,

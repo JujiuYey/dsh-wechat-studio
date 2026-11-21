@@ -1,8 +1,10 @@
 // 发布防踩坑体检：纯 JS、零模型成本、100% 确定性。
 // 作为 DSH 面板与独立 CLI 的唯一体检事实来源，不改动 vendor/layout/layout.js 的 renderPage。
 import { blockKind, plainOf, splitMarkdown } from './article.js'
+import { MAX_MP_TITLE, MAX_TITLE } from './wechat-meta.js'
 
-export const MAX_WECHAT_TITLE = 32
+export const MAX_WECHAT_TITLE = MAX_TITLE
+export const MAX_WECHAT_MP_TITLE = MAX_MP_TITLE
 export const DEFAULT_MAX_PARAGRAPH_CHARS = 160
 export const DEFAULT_MAX_DENSE_CHARS = 600
 
@@ -154,27 +156,50 @@ export function runPreflight(input = {}, options = {}) {
   const items = []
   const stats = { chars: 0, titleChars: title.length, links: 0, images: 0, longParagraphs: 0 }
 
-  // 1. 标题检查（与 src/wechat.js MAX_TITLE = 32 对齐）
+  // 1. 标题两档检查：公众号网页后台手动编辑上限 64 字，草稿箱 API 推送上限 32 字
+  const titleTarget = options.titleTarget === 'draft' ? 'draft' : 'mp'
   if (!title) {
     items.push({
       id: 'title-empty',
       severity: 'blocking',
       category: 'title',
       title: '缺少文章标题',
-      detail: '发布前请填写文章标题（上限 32 字）。',
+      detail: `发布前请填写文章标题（后台手动上限 ${MAX_WECHAT_MP_TITLE} 字，草稿箱推送上限 ${MAX_WECHAT_TITLE} 字）。`,
       blockId: null,
       blockNumber: null,
     })
-  } else if (title.length > MAX_WECHAT_TITLE) {
+  } else if (title.length > MAX_WECHAT_MP_TITLE) {
     items.push({
       id: 'title-too-long',
       severity: 'blocking',
       category: 'title',
-      title: `标题共 ${title.length} 字，超过 ${MAX_WECHAT_TITLE} 字上限`,
-      detail: `公众号草稿箱接口标题上限为 ${MAX_WECHAT_TITLE} 字，推送时超出部分会被截断，请精简标题。`,
+      title: `标题共 ${title.length} 字，超过公众号后台 ${MAX_WECHAT_MP_TITLE} 字上限`,
+      detail: `公众号网页后台标题上限为 ${MAX_WECHAT_MP_TITLE} 字（草稿箱接口上限为 ${MAX_WECHAT_TITLE} 字），请精简标题。`,
       blockId: null,
       blockNumber: null,
     })
+  } else if (title.length > MAX_WECHAT_TITLE) {
+    if (titleTarget === 'draft') {
+      items.push({
+        id: 'title-too-long',
+        severity: 'blocking',
+        category: 'title',
+        title: `标题共 ${title.length} 字，超过草稿箱推送 ${MAX_WECHAT_TITLE} 字上限`,
+        detail: `公众号草稿箱接口标题上限为 ${MAX_WECHAT_TITLE} 字，推送时超出部分会被截断（手动复制到公众号后台最长可填 ${MAX_WECHAT_MP_TITLE} 字）。`,
+        blockId: null,
+        blockNumber: null,
+      })
+    } else {
+      items.push({
+        id: 'title-draft-limit',
+        severity: 'warn',
+        category: 'title',
+        title: `标题共 ${title.length} 字，超出草稿箱推送 ${MAX_WECHAT_TITLE} 字上限`,
+        detail: `手动复制到公众号后台最长支持 ${MAX_WECHAT_MP_TITLE} 字；若使用一键推送草稿箱，超出 ${MAX_WECHAT_TITLE} 字的部分会被截断。`,
+        blockId: null,
+        blockNumber: null,
+      })
+    }
   }
 
   // 2. 逐块扫描：媒体/占位阻断、商单链接提醒、可读性、合规词与自定义词

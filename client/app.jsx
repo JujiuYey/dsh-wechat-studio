@@ -12,6 +12,7 @@ import { COVER_STYLES } from '../src/cover-styles.js'
 import React from 'react'
 import { cardMarkdown, emphasisFormats, formatSelection, insertFormats } from './editor-format.js'
 import { act, copyDetectionText, copyMarkdown, copyText, countCurrentParagraphDrafts, getState, loadLayout, loadModels, loadRevisions, loadSettings, loadSkills, loadStyleProfile, loadVersion, openStyleWizard, previewMarkdownReimport, reimportMarkdown, rememberArticleView, saveSettings, setState, testWechat, testZhuque, toast, uploadImage, uploadPortrait, uploadReport, useStudio } from './state.js'
+import { FeedCardPreview } from './feed-preview.jsx'
 import { InsightsView } from './insights.jsx'
 import { InlineDiagramDialog, InlineDiagramPane } from './inline-diagrams.jsx'
 import { MarkdownImportFields } from './markdown-import.jsx'
@@ -691,11 +692,13 @@ function BannerBar({ article }) {
   )
 }
 
-function LayoutView({ article }) {
+function LayoutView({ article, brand, mp }) {
   const pending = useStudio(s => s.pending)
   const layout = useStudio(s => s.layout)
   const tried = useStudio(s => s.bannerTried)
+  const [previewMode, setPreviewMode] = React.useState('article')
   const frame = React.useRef(null)
+  React.useEffect(() => { setPreviewMode('article') }, [article.id])
   React.useEffect(() => {
     const dismiss = () => frame.current?.contentWindow?.dismissLayoutPopovers?.()
     const onKeyDown = event => { if (event.key === 'Escape') dismiss() }
@@ -754,22 +757,31 @@ function LayoutView({ article }) {
   }
   return (
     <div className="ws-layout">
-      {!enhanced ? <>
-      <BannerBar article={article} />
-      <div className="ws-bannerbar">
-        {typeof article.followCard === 'boolean' ? (
-          <label className="ws-follow-toggle">
-            <span>文末关注卡</span>
-            <input type="checkbox" role="switch" checked={article.followCard} disabled={pending === 'layout/follow-card'}
-              onChange={e => act('layout/follow-card', { id: article.id, enabled: e.target.checked })} />
-            <span className="ws-follow-track" aria-hidden="true" />
-          </label>
-        ) : (
-          <span className="ws-muted">文末关注卡 · 完全退出 DSH（⌘Q）并重新打开后可设置</span>
-        )}
+      <div className="ws-layout-modebar">
+        <div className="ws-tabs" role="tablist" aria-label="排版预览模式">
+          <button type="button" role="tab" aria-selected={previewMode === 'article'} className={previewMode === 'article' ? 'is-on' : ''} onClick={() => setPreviewMode('article')}>正文预览</button>
+          <button type="button" role="tab" aria-selected={previewMode === 'feed'} className={previewMode === 'feed' ? 'is-on' : ''} onClick={() => setPreviewMode('feed')}>信息流卡片</button>
+        </div>
       </div>
-      </> : null}
-      {content}
+      <div className="ws-layout-article" hidden={previewMode !== 'article'}>
+        {!enhanced ? <>
+        <BannerBar article={article} />
+        <div className="ws-bannerbar">
+          {typeof article.followCard === 'boolean' ? (
+            <label className="ws-follow-toggle">
+              <span>文末关注卡</span>
+              <input type="checkbox" role="switch" checked={article.followCard} disabled={pending === 'layout/follow-card'}
+                onChange={e => act('layout/follow-card', { id: article.id, enabled: e.target.checked })} />
+              <span className="ws-follow-track" aria-hidden="true" />
+            </label>
+          ) : (
+            <span className="ws-muted">文末关注卡 · 完全退出 DSH（⌘Q）并重新打开后可设置</span>
+          )}
+        </div>
+        </> : null}
+        {content}
+      </div>
+      {previewMode === 'feed' ? <FeedCardPreview article={article} brand={brand} mp={mp} /> : null}
     </div>
   )
 }
@@ -2192,7 +2204,7 @@ function PaperModule({ data }) {
       ) : null}
       <div className={`ws-body ${chatOpen && view !== 'layout' ? '' : 'no-chat'}`}>
         {chatOpen && view !== 'layout' ? <ChatPane article={article} /> : null}
-        <main className="ws-main">{view === 'layout' ? <LayoutView article={article} /> : <Paper article={article} reviewTarget={reviewTarget} />}</main>
+        <main className="ws-main">{view === 'layout' ? <LayoutView article={article} brand={data.brand} mp={data.mp} /> : <Paper article={article} reviewTarget={reviewTarget} />}</main>
         {view === 'paper' ? <SidePane key={article.id} article={article} tab={sideTab} onTab={selectSideTab} tabId={sideTabId} flagged={flagged} retest={retest} ready={data.zhuqueReady} reviewTarget={reviewTarget} onReviewJump={jumpToReview} cloudinaryReady={data.cloudinaryReady} unsavedCount={unsavedParagraphCount(article)} /> : null}
       </div>
     </>

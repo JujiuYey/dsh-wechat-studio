@@ -703,10 +703,11 @@ test('state 返回实时 preflight 结果，保存自定义提醒词后立即生
 
   const before = await request('state')
   const pf1 = before.current.preflight
-  assert.equal(pf1.ok, false)
-  assert.equal(pf1.counts.blocking, 1)
-  const titleItem = pf1.items.find(item => item.id === 'title-too-long')
+  assert.equal(pf1.ok, true)
+  assert.equal(pf1.counts.blocking, 0)
+  const titleItem = pf1.items.find(item => item.id === 'title-draft-limit')
   assert.ok(titleItem)
+  assert.equal(titleItem.severity, 'warn')
   assert.equal(titleItem.blockId, null)
   const linkItem = pf1.items.find(item => item.id === 'external-link')
   assert.ok(linkItem)
@@ -722,4 +723,98 @@ test('state 返回实时 preflight 结果，保存自定义提醒词后立即生
   assert.ok(customItem)
   assert.equal(customItem.severity, 'warn')
   assert.equal(customItem.blockId, article.blocks[0].id)
+  assert.deepEqual(after.mp, { name: '', headImg: '' })
+  assert.equal('portraitUrl' in after, false)
+})
+
+test('wechat/verify 命中已保存 appId 时缓存头像到 state.mp，未保存 appId 不覆盖', async () => {
+  const { route } = await import('../src/host.js')
+  const store = new Store(mkdtempSync(join(tmpdir(), 'ws-mp-verify-')))
+  const base = 'https://example.com/'
+  const avatarSaved = `${base}saved.png`
+  const avatarTemp = `${base}temp.png`
+  const fetchImpl = async url => {
+    const target = String(url)
+    if (target.includes('/cgi-bin/token')) {
+      return Response.json({ access_token: target.includes('wx-saved') ? 't1' : 't2' })
+    }
+    if (target.includes('getaccountinfo')) {
+      const isSaved = target.includes('t1')
+      return Response.json({ nick_name: isSaved ? '主号' : '临时号', head_img: isSaved ? avatarSaved : avatarTemp })
+    }
+    throw new Error(`unexpected ${target}`)
+  }
+  const deps = { ctx: { get: () => null }, store, pipeline: { job: () => null }, fetchImpl }
+  const call = async (path, payload) => {
+    const req = {
+      url: '/wechat-studio/' + path,
+      method: payload ? 'POST' : 'GET',
+      async *[Symbol.asyncIterator]() { if (payload) yield Buffer.from(JSON.stringify(payload)) },
+    }
+    let out
+    await route(deps, req, { setHeader() {}, end(value) { out = JSON.parse(value) } })
+    return out
+  }
+
+  await call('settings', { mp: { name: '测试公众号', appId: 'wx-saved', appSecret: 'a'.repeat(32) } })
+  const res1 = await call('wechat/verify', {})
+  assert.equal(res1.ok, true)
+  assert.equal(res1.headImg, avatarSaved)
+
+  const s1 = await call('state')
+  assert.deepEqual(s1.mp, { name: '测试公众号', headImg: avatarSaved })
+  assert.equal('appId' in s1.mp, false)
+  assert.equal('appSecret' in s1.mp, false)
+
+  const res2 = await call('wechat/verify', { mpAppId: 'wx-temp', mpAppSecret: 'b'.repeat(32) })
+  assert.equal(res2.headImg, avatarTemp)
+  const s2 = await call('state')
+  assert.deepEqual(s2.mp, { name: '测试公众号', headImg: avatarSaved })
+})
+
+test('wechat/verify 延迟返回时若已切换账号，文件锁内条件校验阻止把旧头像写到新账号', async () => {
+  const { route } = await import('../src/host.js')
+  const store = new Store(mkdtempSync(join(tmpdir(), 'ws-mp-race-')))
+  const base = 'https://example.com/'
+  const avatarA = `${base}account-a.png`
+  let releaseVerifyA
+  const gateA = new Promise(resolve => { releaseVerifyA = resolve })
+  const fetchImpl = async url => {
+    const target = String(url)
+    if (target.includes('/cgi-bin/token')) {
+      return Response.json({ access_token: 'tok-a' })
+    }
+    if (target.includes('getaccountinfo')) {
+      await gateA
+      return Response.json({ nick_name: '账号A', head_img: avatarA })
+    }
+    throw new Error(`unexpected ${target}`)
+  }
+  const deps = { ctx: { get: () => null }, store, pipeline: { job: () => null }, fetchImpl }
+  const call = async (path, payload) => {
+    const req = {
+      url: '/wechat-studio/' + path,
+      method: payload ? 'POST' : 'GET',
+      async *[Symbol.asyncIterator]() { if (payload) yield Buffer.from(JSON.stringify(payload)) },
+    }
+    let out
+    await route(deps, req, { setHeader() {}, end(value) { out = JSON.parse(value) } })
+    return out
+  }
+
+  await call('settings', { mp: { name: '账号A', appId: 'wx-a', appSecret: 'a'.repeat(32) } })
+  const verifyPending = call('wechat/verify', {})
+
+  // 验证 A 尚未返回时切换为账号 B
+  await call('settings', { mp: { name: '账号B', appId: 'wx-b', appSecret: 'b'.repeat(32) } })
+  releaseVerifyA()
+  const verifyRes = await verifyPending
+  assert.equal(verifyRes.ok, true)
+  assert.equal(verifyRes.headImg, avatarA)
+
+  const after = await call('state')
+  assert.deepEqual(after.mp, { name: '账号B', headImg: '' })
+  const saved = await readSettings(store.root)
+  assert.equal(saved.mp.appId, 'wx-b')
+  assert.equal(saved.mp.headImg, '')
 })

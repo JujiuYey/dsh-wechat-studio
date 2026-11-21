@@ -179,17 +179,26 @@ test('mp 凭证保存后 publicSettings 只报有没有', async () => {
   const root = await mkdtemp(join(tmpdir(), 'wechat-mp-'))
   try {
     const next = await updateSettings(root, { mp: { name: '小钥 AI', appId: 'wx123', appSecret: 'a'.repeat(32) } })
-    assert.deepEqual(next.mp, { name: '小钥 AI', appId: 'wx123', appSecret: 'a'.repeat(32) })
+    assert.deepEqual(next.mp, { name: '小钥 AI', appId: 'wx123', appSecret: 'a'.repeat(32), headImg: '' })
     const pub = publicSettings(next)
     assert.equal(pub.mp.appId, 'wx123')
     assert.equal(pub.mp.appSecretSet, true)
+    assert.equal(pub.mp.headImg, '')
     assert.ok(!('appSecret' in pub.mp))
     // 文件确实落盘且不在 publicSettings 里泄漏
     const saved = JSON.parse(await readFile(join(root, 'settings.json'), 'utf8'))
     assert.equal(saved.mp.appSecret, 'a'.repeat(32))
-    // 不传 appSecret 时不改动；传非 32 位报 400
+    // 缓存头像并验证更换 appId 时清空旧头像、非法协议不保存
+    const withAvatar = await updateSettings(root, { mp: { headImg: 'https://cdn.example.com/avatar.png' } })
+    assert.equal(withAvatar.mp.headImg, 'https://cdn.example.com/avatar.png')
+    assert.equal(publicSettings(withAvatar).mp.headImg, 'https://cdn.example.com/avatar.png')
+    const badAvatar = await updateSettings(root, { mp: { headImg: 'ftp://example.com/avatar.png' } })
+    assert.equal(badAvatar.mp.headImg, '')
+    await updateSettings(root, { mp: { headImg: 'https://cdn.example.com/avatar.png' } })
+    // 不传 appSecret 时不改动；传非 32 位报 400；换了 appId 清空旧头像
     const untouched = await updateSettings(root, { mp: { appId: 'wx456' } })
     assert.equal(untouched.mp.appSecret, 'a'.repeat(32))
+    assert.equal(untouched.mp.headImg, '')
     await assert.rejects(updateSettings(root, { mp: { appSecret: 'not-hex' } }), /AppSecret/)
     // 空字符串表示清除
     const cleared = await updateSettings(root, { mp: { appSecret: '' } })
@@ -204,11 +213,106 @@ test('mp 凭证保存后 publicSettings 只报有没有', async () => {
 test('readSettings 对坏掉的 mp 字段有默认值', async () => {
   const root = await mkdtemp(join(tmpdir(), 'wechat-mp-'))
   try {
-    await writeFile(join(root, 'settings.json'), JSON.stringify({ mp: { name: 1, appId: null, appSecret: 3 } }))
+    await writeFile(join(root, 'settings.json'), JSON.stringify({ mp: { name: 1, appId: null, appSecret: 3, headImg: 'ftp://bad.example/x.png' } }))
     const settings = await readSettings(root)
-    assert.deepEqual(settings.mp, { name: '', appId: '', appSecret: '' })
+    assert.deepEqual(settings.mp, { name: '', appId: '', appSecret: '', headImg: '' })
     assert.equal(publicSettings(settings).mp.appSecretSet, false)
   } finally {
     await rm(root, { recursive: true, force: true })
   }
+})
+
+test('pushWechatDraft 优先发送 article.summary 作为 digest，超长按 120 字截断', async () => {
+  let sentPayload = null
+  const fetchImpl = async (url, init) => {
+    const target = String(url)
+    if (target.includes('/cgi-bin/token')) return Response.json({ access_token: 'tok' })
+    if (target.includes('add_material')) return Response.json({ media_id: 'THUMB' })
+    if (target.includes('draft/add')) {
+      sentPayload = JSON.parse(init.body)
+      return Response.json({ media_id: 'DRAFT' })
+    }
+    throw new Error(`unexpected ${target}`)
+  }
+  const longSummary = `  ${'摘'.repeat(130)}  `
+  await pushWechatDraft({
+    article: { title: '测试标题', summary: longSummary, blocks: [{ text: '正文第一段' }] },
+    html: '<p>正文第一段</p>',
+    settings: { mp: { appId: 'a', appSecret: 'b' } },
+    fetchImpl,
+  })
+  assert.equal(sentPayload.articles[0].digest, '摘'.repeat(120))
+})
+
+test('pushWechatDraft 无摘要时跳过标题/图片/代码块，取第一段正文纯文本作为 digest', async () => {
+  const sentDigests = []
+  const fetchImpl = async (url, init) => {
+    const target = String(url)
+    if (target.includes('/cgi-bin/token')) return Response.json({ access_token: 'tok' })
+    if (target.includes('add_material')) return Response.json({ media_id: 'THUMB' })
+    if (target.includes('draft/add')) {
+      sentDigests.push(JSON.parse(init.body).articles[0].digest)
+      return Response.json({ media_id: 'DRAFT' })
+    }
+    throw new Error(`unexpected ${target}`)
+  }
+  await pushWechatDraft({
+    article: {
+      title: '测试标题',
+      summary: '   ',
+      blocks: [
+        { text: '## 小标题' },
+        { text: '![配图](https://example.com/a.png)' },
+        { text: '```js\nconsole.log(1)\n```' },
+        { text: '这是**第一段**正文，里面有 `代码` 和   多余空格。' },
+      ],
+    },
+    html: '<p>x</p>',
+    settings: { mp: { appId: 'a', appSecret: 'b' } },
+    fetchImpl,
+  })
+  await pushWechatDraft({
+    article: {
+      title: '只有非正文块',
+      summary: '',
+      blocks: [{ text: '## 仅标题' }, { text: '![图](https://example.com/b.png)' }],
+    },
+    html: '<p>x</p>',
+    settings: { mp: { appId: 'a', appSecret: 'b' } },
+    fetchImpl,
+  })
+  assert.deepEqual(sentDigests, ['这是第一段正文，里面有 代码 和 多余空格。', ''])
+})
+
+test('deriveDigest 按 120 UTF-16 码元截断时不拆分末尾 emoji 代理对', async () => {
+  const { deriveDigest } = await import('../src/wechat-meta.js')
+  const summary = '文'.repeat(119) + '🚀'
+  const direct = deriveDigest({ summary })
+  assert.equal(direct.text, '文'.repeat(119))
+  assert.equal(direct.text.length, 119)
+
+  const fromBlock = deriveDigest({ summary: '', blocks: [{ kind: 'para', text: '文'.repeat(119) + '🚀后续' }] })
+  assert.equal(fromBlock.text, '文'.repeat(119))
+  assert.equal(fromBlock.fallback, true)
+})
+
+test('pushWechatDraft 截断超长标题时不拆分末尾 emoji 代理对', async () => {
+  let sentTitle = null
+  const fetchImpl = async (url, init) => {
+    const target = String(url)
+    if (target.includes('/cgi-bin/token')) return Response.json({ access_token: 'tok' })
+    if (target.includes('add_material')) return Response.json({ media_id: 'THUMB' })
+    if (target.includes('draft/add')) {
+      sentTitle = JSON.parse(init.body).articles[0].title
+      return Response.json({ media_id: 'DRAFT' })
+    }
+    throw new Error(`unexpected ${target}`)
+  }
+  await pushWechatDraft({
+    article: { title: '文'.repeat(31) + '🚀', blocks: [{ text: '正文' }] },
+    html: '<p>正文</p>',
+    settings: { mp: { appId: 'a', appSecret: 'b' } },
+    fetchImpl,
+  })
+  assert.equal(sentTitle, '文'.repeat(31))
 })

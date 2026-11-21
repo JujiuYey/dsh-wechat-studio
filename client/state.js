@@ -321,10 +321,12 @@ export async function testZhuque(patch) {
   }
 }
 
-/** 试一次公众号凭证。返回 {ok, nickname, headImg} 或 {error}。 */
+/** 试一次公众号凭证。返回 {ok, nickname, headImg} 或 {error}；验证成功后刷新全局状态以同步缓存的公众号头像。 */
 export async function testWechat(patch) {
   try {
-    return await request('wechat/verify', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(patch) })
+    const result = await request('wechat/verify', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(patch) })
+    if (result?.ok) await refresh()
+    return result
   } catch (err) {
     return { error: err.message }
   }

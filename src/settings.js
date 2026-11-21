@@ -10,8 +10,17 @@ import { mkdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { checkEndpoint, DEFAULT_ENDPOINT } from './zhuque.js'
 
-// 公众号 API 凭证：名称/AppID/AppSecret，用来推送草稿箱。AppSecret 只留在本机。
-const DEFAULT_MP = { name: '', appId: '', appSecret: '' }
+// 公众号 API 凭证：名称/AppID/AppSecret 与独立缓存头像，用来推送草稿箱与信息流预览。AppSecret 只留在本机。
+const DEFAULT_MP = { name: '', appId: '', appSecret: '', headImg: '' }
+
+function safeAvatarUrl(value) {
+  if (typeof value !== 'string') return ''
+  const trimmed = value.trim().slice(0, 2000)
+  if (!trimmed || !URL.canParse(trimmed)) return ''
+  const parsed = new URL(trimmed)
+  if ((parsed.protocol !== 'https:' && parsed.protocol !== 'http:') || parsed.username || parsed.password) return ''
+  return trimmed
+}
 
 // 每篇都一样的固定句：检测时整行去掉，避免和正文混进同一个片段把分数拉高
 const DEFAULTS = { fixedLines: ['设为「星标」', '教你用AI干掉90%的重复劳动'], preflightWords: [], style: null, theme: null, zhuqueKey: '', zhuqueEndpoint: DEFAULT_ENDPOINT, model: { provider: '', model: '' } }
@@ -106,6 +115,7 @@ export async function readSettings(root) {
       name: typeof saved.mp?.name === 'string' ? saved.mp.name : '',
       appId: typeof saved.mp?.appId === 'string' ? saved.mp.appId : '',
       appSecret: typeof saved.mp?.appSecret === 'string' ? saved.mp.appSecret : '',
+      headImg: safeAvatarUrl(saved.mp?.headImg),
     },
     model: saved.model?.provider && saved.model?.model ? { provider: String(saved.model.provider), model: String(saved.model.model) } : { provider: '', model: '' },
   }
@@ -196,14 +206,42 @@ export async function updateSettings(root, body) {
     next.model = { provider, model }
   }
   if (body.mp && typeof body.mp === 'object') {
+    const prevAppId = next.mp.appId
     // appSecret 传空字符串表示清除；不传（undefined）表示保持不变
     for (const field of ['name', 'appId', 'appSecret']) {
       if (typeof body.mp[field] === 'string') next.mp[field] = body.mp[field].trim().slice(0, 400)
+    }
+    if (typeof body.mp.headImg === 'string') {
+      next.mp.headImg = safeAvatarUrl(body.mp.headImg)
+    } else if (next.mp.appId !== prevAppId) {
+      next.mp.headImg = ''
     }
     if (next.mp.appSecret && !/^[a-f0-9]{32}$/i.test(next.mp.appSecret)) {
       throw Object.assign(new Error('AppSecret 是 32 位十六进制字符串，请到微信开发者平台「我的业务 → 公众号/服务号 → 基础信息 → 开发密钥」复制完整的一串。'), { status: 400 })
     }
   }
+    await mkdir(root, { recursive: true })
+    await writeJsonAtomic(file, next)
+    return next
+  })
+}
+
+/**
+ * 在文件锁内按期望 appId 条件缓存公众号头像，避免并发切换账号时延迟返回的验证结果覆盖新账号。
+ * @param {string} root
+ * @param {string} expectedAppId
+ * @param {string} headImg
+ */
+export async function cacheMpHeadImg(root, expectedAppId, headImg) {
+  const cleanId = typeof expectedAppId === 'string' ? expectedAppId.trim() : ''
+  const cleanUrl = safeAvatarUrl(headImg)
+  if (!cleanId || !cleanUrl) return null
+  const file = join(root, 'settings.json')
+  return withFileLock(`${file}.lock`, async () => {
+    const next = await readSettings(root)
+    if (next.mp.appId !== cleanId) return next
+    if (next.mp.headImg === cleanUrl) return next
+    next.mp.headImg = cleanUrl
     await mkdir(root, { recursive: true })
     await writeJsonAtomic(file, next)
     return next
@@ -236,6 +274,7 @@ export function publicSettings(settings) {
       name: settings.mp?.name ?? DEFAULT_MP.name,
       appId: settings.mp?.appId ?? DEFAULT_MP.appId,
       appSecretSet: Boolean(settings.mp?.appSecret),
+      headImg: settings.mp?.headImg ?? DEFAULT_MP.headImg,
     },
     zhuqueKeySet: Boolean(key),
     zhuqueKeyTail: key ? key.slice(-4) : '',

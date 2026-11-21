@@ -20,7 +20,7 @@ import { applyRule, buildInsights, EXPERIMENT_RESULTS, importData, INSIGHTS_EMPT
 import { Pipeline } from './pipeline.js'
 import { runPreflight } from './preflight.js'
 import { pdfToText } from './report.js'
-import { publicSettings, readSettings, updateSettings } from './settings.js'
+import { cacheMpHeadImg, publicSettings, readSettings, updateSettings } from './settings.js'
 import { scheduleTime as parseScheduleTime } from './schedule-time.js'
 import { JsonStore, Store } from './store.js'
 import { createVersionChecker } from './version.js'
@@ -405,6 +405,7 @@ async function snapshotState(ctx, store, pipeline) {
   ])
   return {
     brand: settings.brand,
+    mp: { name: settings.mp?.name ?? '', headImg: settings.mp?.headImg ?? '' },
     zhuqueReady: Boolean(settings.zhuqueKey),
     cloudinaryReady: Boolean(settings.cloudinary?.cloudName && settings.cloudinary?.apiKey && settings.cloudinary?.apiSecret),
     hasPersonalStyle: styleState.active,
@@ -1121,6 +1122,9 @@ export async function route(deps, req, res) {
       const appSecret = typeof body.mpAppSecret === 'string' && body.mpAppSecret.trim() ? body.mpAppSecret.trim() : settings.mp.appSecret
       if (!appId || !appSecret) throw Object.assign(new Error('请先填写 AppID 和 AppSecret 再验证。'), { status: 400 })
       const { nickname, headImg } = await verifyCredentials(appId, appSecret, deps.fetchImpl)
+      if (headImg) {
+        await cacheMpHeadImg(store.root, appId, headImg)
+      }
       return json(res, 200, { ok: true, nickname, headImg })
     }
     case 'wechat/draft': {

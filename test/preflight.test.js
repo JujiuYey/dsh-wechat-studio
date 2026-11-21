@@ -19,7 +19,7 @@ test('干净文章体检通过，阻断与提醒均为 0', () => {
   assert.equal(res.stats.links, 0)
 })
 
-test('标题长度边界：空标题阻断，32 字通过，33 字阻断', () => {
+test('标题长度边界：空标题与超 64 字阻断，33–64 字默认提醒、草稿箱模式阻断', () => {
   const empty = runPreflight({ title: '', blocks: [{ id: 'b1', text: '一段正常正文。' }] })
   assert.equal(empty.ok, false)
   assert.equal(empty.items[0].id, 'title-empty')
@@ -29,11 +29,32 @@ test('标题长度边界：空标题阻断，32 字通过，33 字阻断', () =>
   const ok32 = runPreflight({ title: '字'.repeat(MAX_WECHAT_TITLE), blocks: [{ id: 'b1', text: '一段正常正文。' }] })
   assert.equal(ok32.ok, true)
   assert.equal(ok32.counts.blocking, 0)
+  assert.equal(ok32.counts.warn, 0)
 
-  const bad33 = runPreflight({ title: '字'.repeat(MAX_WECHAT_TITLE + 1), blocks: [{ id: 'b1', text: '一段正常正文。' }] })
-  assert.equal(bad33.ok, false)
-  assert.equal(bad33.items[0].id, 'title-too-long')
-  assert.equal(bad33.items[0].severity, 'blocking')
+  const warn33 = runPreflight({ title: '字'.repeat(MAX_WECHAT_TITLE + 1), blocks: [{ id: 'b1', text: '一段正常正文。' }] })
+  assert.equal(warn33.ok, true)
+  assert.equal(warn33.counts.blocking, 0)
+  assert.equal(warn33.counts.warn, 1)
+  assert.equal(warn33.items[0].id, 'title-draft-limit')
+  assert.equal(warn33.items[0].severity, 'warn')
+
+  const warn64 = runPreflight({ title: '字'.repeat(64), blocks: [{ id: 'b1', text: '一段正常正文。' }] })
+  assert.equal(warn64.ok, true)
+  assert.equal(warn64.items[0].id, 'title-draft-limit')
+  assert.equal(warn64.items[0].severity, 'warn')
+
+  const block65 = runPreflight({ title: '字'.repeat(65), blocks: [{ id: 'b1', text: '一段正常正文。' }] })
+  assert.equal(block65.ok, false)
+  assert.equal(block65.items[0].id, 'title-too-long')
+  assert.equal(block65.items[0].severity, 'blocking')
+
+  const draft33 = runPreflight(
+    { title: '字'.repeat(MAX_WECHAT_TITLE + 1), blocks: [{ id: 'b1', text: '一段正常正文。' }] },
+    { titleTarget: 'draft' },
+  )
+  assert.equal(draft33.ok, false)
+  assert.equal(draft33.items[0].id, 'title-too-long')
+  assert.equal(draft33.items[0].severity, 'blocking')
 })
 
 test('媒体与占位阻断：飞书图、本地图、base64 与 [可补/截图] 占位均阻断，代码块内不误报', () => {
