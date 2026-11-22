@@ -1013,3 +1013,100 @@ test('可执行入口 bin/wechat-studio.js 真实子进程冒烟测试', async (
   const { stdout } = await execFileAsync(process.execPath, [BIN_PATH, '--version', '--json'])
   assert.deepEqual(JSON.parse(stdout), { ok: true, version: pkg.version })
 })
+
+test('derive 子命令：导出通用 Markdown、--prompt-only 与串推生成', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'ws-cli-derive-'))
+  try {
+    const importIo = makeIo({ stdin: '# 一稿多发测试\n\n第一段包含 ==重点高亮== 和真实数据 1,200 人。\n\n第二段说明具体步骤。\n\n设为「星标」\n' })
+    assert.equal(await runCli(['articles', 'import', '-', '--data-dir', dir, '--json'], importIo), 0)
+    const { id } = JSON.parse(importIo.read().out)
+
+    // 1. derive --help
+    const helpIo = makeIo()
+    assert.equal(await runCli(['derive', '--help', '--json'], helpIo), 0)
+    assert.match(JSON.parse(helpIo.read().out).help, /derive markdown/)
+
+    // 2. derive markdown --target zhihu --json
+    const zhihuIo = makeIo()
+    assert.equal(await runCli(['derive', 'markdown', id, '--target', 'zhihu', '--data-dir', dir, '--json'], zhihuIo), 0)
+    const zhihuRes = JSON.parse(zhihuIo.read().out)
+    assert.equal(zhihuRes.ok, true)
+    assert.equal(zhihuRes.title, '一稿多发测试')
+    assert.ok(!zhihuRes.markdown.startsWith('# 一稿多发测试'))
+    assert.ok(zhihuRes.markdown.includes('**重点高亮**'))
+    assert.ok(!zhihuRes.markdown.includes('设为「星标」'))
+
+    // 3. derive markdown --out 写文件
+    const outFile = join(dir, 'out.md')
+    const outIo = makeIo()
+    assert.equal(await runCli(['derive', 'markdown', id, '--target', 'blog', '--out', outFile, '--data-dir', dir, '--json'], outIo), 0)
+    assert.equal(JSON.parse(outIo.read().out).out, outFile)
+    assert.match(await readFile(outFile, 'utf8'), /^# 一稿多发测试\n\n/)
+
+    // 4. 非法 --target 返回退出码 2
+    const badTargetIo = makeIo()
+    assert.equal(await runCli(['derive', 'markdown', id, '--target', 'weibo', '--data-dir', dir, '--json'], badTargetIo), 2)
+    const badTargetRes = JSON.parse(badTargetIo.read().out)
+    assert.equal(badTargetRes.code, 'USAGE')
+    assert.match(badTargetRes.error, /zhihu.*juejin.*blog/)
+
+    // 5. derive thread --prompt-only --json 不调模型也不修改 store
+    const promptThreadIo = makeIo()
+    assert.equal(await runCli(['derive', 'thread', id, '--variant', 'x', '--prompt-only', '--data-dir', dir, '--json'], promptThreadIo), 0)
+    const promptThreadRes = JSON.parse(promptThreadIo.read().out)
+    assert.equal(promptThreadRes.ok, true)
+    assert.equal(promptThreadRes.promptOnly, true)
+    assert.equal(promptThreadRes.platform, 'thread')
+    assert.equal(promptThreadRes.variant, 'x')
+    assert.match(promptThreadRes.system, /270/)
+
+    // 6. derive xhs --prompt-only --json
+    const promptXhsIo = makeIo()
+    assert.equal(await runCli(['derive', 'xhs', id, '--prompt-only', '--data-dir', dir, '--json'], promptXhsIo), 0)
+    const promptXhsRes = JSON.parse(promptXhsIo.read().out)
+    assert.equal(promptXhsRes.ok, true)
+    assert.equal(promptXhsRes.promptOnly, true)
+    assert.equal(promptXhsRes.platform, 'xhs')
+
+    // 确认 store 未写入任何派生记录
+    const articleOnDisk = JSON.parse(await readFile(join(dir, 'articles', id, 'article.json'), 'utf8'))
+    assert.equal(articleOnDisk.derivatives, undefined)
+
+    // 7. derive thread <id> --variant jike --json 实际生成并写入 store
+    const fakeThreadCtx = {
+      get: name => ({
+        agentDefaultModel: { currentSelection: () => ({ provider: 'p', model: 'm' }) },
+        llm: {
+          prepareCall: () => ({
+            config: {},
+            async *stream() {
+              yield {
+                type: 'text-delta',
+                text: JSON.stringify({
+                  posts: [
+                    { text: '第一条：核心结论', source: [] },
+                    { text: '第二条：步骤拆解', source: [] },
+                    { text: '第三条：欢迎交流', source: [] },
+                  ],
+                }),
+              }
+              yield { type: 'finish', reason: { kind: 'stop' } }
+            },
+          }),
+        },
+      })[name] ?? null,
+    }
+    const genThreadIo = makeIo({ ctx: fakeThreadCtx })
+    assert.equal(await runCli(['derive', 'thread', id, '--variant', 'jike', '--data-dir', dir, '--json'], genThreadIo), 0)
+    const genThreadRes = JSON.parse(genThreadIo.read().out)
+    assert.equal(genThreadRes.ok, true)
+    assert.equal(genThreadRes.payload.posts.length, 3)
+
+    // 8. 未知子动作返回退出码 2
+    const badActionIo = makeIo()
+    assert.equal(await runCli(['derive', 'weibo', id, '--data-dir', dir, '--json'], badActionIo), 2)
+    assert.equal(JSON.parse(badActionIo.read().out).code, 'USAGE')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})

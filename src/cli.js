@@ -10,6 +10,9 @@ import { COVER_FORMATS, COVER_PROVIDERS, COVER_RESOLUTIONS, providerFormats } fr
 import { buildCoverPromptRequest } from './cover-prompt.js'
 import { COVER_STYLES } from './cover-styles.js'
 import { coverPrompt, generateArkCover, generateBailianCover, readCover, saveCover } from './cover.js'
+import { generateDerivative, prepareDerivePrompt } from './derive.js'
+import { toPortableMarkdown } from './derive-markdown.js'
+import { MARKDOWN_TARGETS, THREAD_VARIANTS, threadClipboardText, xhsClipboardText } from './derive-shared.js'
 import { buildInsights, importData, INSIGHTS_EMPTY } from './insights.js'
 import { checkBanner, detectionText, renderLayout, renderSvgCard, renderWechatHtml, resolveLayoutPreferences, STYLES, SVG_CARD_KINDS, THEMES } from './layout.js'
 import { MAX_WECHAT_TITLE, runPreflight } from './preflight.js'
@@ -54,7 +57,7 @@ const VALUE_FLAGS = new Set([
   '--author', '--slogan', '--cover-provider', '--ark-model', '--bailian-model', '--portrait-url',
   '--zhuque-key', '--zhuque-endpoint', '--ark-key', '--bailian-key',
   '--mp-name', '--mp-app-id', '--mp-app-secret', '--from-json', '--preflight-words',
-  '--app-id', '--app-secret', '--cover', '--avatar',
+  '--app-id', '--app-secret', '--cover', '--avatar', '--target', '--variant',
 ])
 
 const HELP_TEXT = `wechat-studio v${VERSION} — 微信公众号成稿台 CLI（兼容 DeepSeek Harness 插件工作区）
@@ -75,6 +78,8 @@ const HELP_TEXT = `wechat-studio v${VERSION} — 微信公众号成稿台 CLI（
   insights <import|summary>      导入公众号后台数据或输出复盘指标
   style <status|analyze|preview|apply|restore>
                                  管理个人写作风格（支持 --prompt-only）
+  derive <markdown|thread|xhs> <id>
+                                 一稿多发：导出通用 Markdown 或生成串推/小红书
 
 全局选项:
   --json                         仅在 stdout 输出单行结构化 JSON（供 Agent 解析）
@@ -198,6 +203,23 @@ push 选项:
   --app-id <id> / --app-secret <sec>   临时覆盖公众号凭证（也支持环境变量 WECHAT_APP_ID / WECHAT_APP_SECRET）
   --dry-run                            仅在本地完成排版与完整体检，不调用微信接口
   --force                              忽略阻断级预检问题（本地图/飞书图/占位/标题超长等）强制推送`,
+
+  derive: `用法:
+  wechat-studio derive markdown <articleId> [--target zhihu|juejin|blog] [--out <file.md>]
+  wechat-studio derive thread   <articleId> [--variant jike|x] [--force] [--prompt-only]
+  wechat-studio derive xhs      <articleId> [--force] [--prompt-only]
+说明:
+  基于工作区稿件库中的已成稿，导出通用 Markdown 或提炼即刻/X 串推、小红书图文。
+  卡片 PNG 与 ZIP 打包请在插件「一稿多发」页导出。
+常用选项:
+  --target <zhihu|juejin|blog>         通用 Markdown 目标平台（默认 blog）
+  --variant <jike|x>                   串推平台（默认 jike）
+  --out <file.md>                      将通用 Markdown 写入文件
+  --force                              覆盖已手动修改过的派生稿
+  --prompt-only                        仅输出提示词与输入段落，不调用模型也不写库
+  --model / --base-url                 覆盖独立模型配置
+  --data-dir <path>                    指定工作区目录
+  --json                               输出单行结构化 JSON`,
 }
 
 function scrubSecrets(text, secrets = []) {
@@ -1142,6 +1164,97 @@ async function handleCheck(argv, io) {
   }, human)
 }
 
+async function handleDerive(argv, io, secrets) {
+  const { action, rest } = splitSubAction(argv)
+  if (!action) {
+    const { values } = parseSubcommandArgs(rest)
+    return emitSuccess(io, values.json, { help: SUB_HELP.derive }, SUB_HELP.derive)
+  }
+  if (action === 'markdown') {
+    const { values, positionals } = parseSubcommandArgs(rest, {
+      target: { type: 'string', default: 'blog' },
+      out: { type: 'string' },
+    })
+    if (values.help) return emitSuccess(io, values.json, { help: SUB_HELP.derive }, SUB_HELP.derive)
+    const usage = '用法：wechat-studio derive markdown <articleId> [--target zhihu|juejin|blog] [--out <file.md>]'
+    assertPositionals(positionals, 1, usage)
+    const id = positionals[0]
+    if (!id) throw new UsageError(usage)
+    if (!MARKDOWN_TARGETS.includes(values.target)) {
+      throw new UsageError(`不支持的导出目标：${values.target}（可选：${MARKDOWN_TARGETS.join(', ')}）`)
+    }
+    const dataDir = resolveDataDir(values, io.env)
+    const store = new Store(dataDir)
+    const [state, settings] = await Promise.all([store.read(), readSettings(dataDir)])
+    const article = state.articles.find(a => a.id === id)
+    if (!article) throw Object.assign(new Error(`找不到稿件：${id}`), { status: 404 })
+    const result = toPortableMarkdown(article, { target: values.target, fixedLines: settings.fixedLines })
+    if (values.out) {
+      await writeOutFile(values.out, result.markdown)
+      const warnText = result.warnings.length ? `\n提醒：\n${result.warnings.map(w => `- ${w}`).join('\n')}` : ''
+      return emitSuccess(io, values.json, { id: article.id, target: values.target, out: values.out, ...result }, `已导出通用 Markdown：${values.out}${warnText}`)
+    }
+    if (!values.json && result.warnings.length) {
+      for (const warning of result.warnings) writeLine(io.stderr, `提醒：${warning}`)
+    }
+    return emitSuccess(io, values.json, { id: article.id, target: values.target, out: null, ...result }, result.markdown.replace(/\n$/, ''))
+  }
+  if (action === 'thread' || action === 'xhs') {
+    const platform = action
+    const { values, positionals } = parseSubcommandArgs(rest, {
+      ...LLM_OPTIONS,
+      ...(platform === 'thread' ? { variant: { type: 'string', default: 'jike' } } : {}),
+      force: { type: 'boolean', default: false },
+      'prompt-only': { type: 'boolean', default: false },
+    })
+    if (values.help) return emitSuccess(io, values.json, { help: SUB_HELP.derive }, SUB_HELP.derive)
+    const usage = platform === 'thread'
+      ? '用法：wechat-studio derive thread <articleId> [--variant jike|x] [--force] [--prompt-only]'
+      : '用法：wechat-studio derive xhs <articleId> [--force] [--prompt-only]'
+    assertPositionals(positionals, 1, usage)
+    const id = positionals[0]
+    if (!id) throw new UsageError(usage)
+    if (platform === 'thread' && !THREAD_VARIANTS.includes(values.variant)) {
+      throw new UsageError(`不支持的串推平台：${values.variant}（可选：${THREAD_VARIANTS.join(', ')}）`)
+    }
+    const dataDir = resolveDataDir(values, io.env)
+    const store = new Store(dataDir)
+    if (values['prompt-only']) {
+      const state = await store.read()
+      const article = state.articles.find(a => a.id === id)
+      if (!article) throw Object.assign(new Error(`找不到稿件：${id}`), { status: 404 })
+      const prepared = await prepareDerivePrompt(article, { platform, variant: values.variant, root: dataDir })
+      const payload = {
+        promptOnly: true,
+        id: article.id,
+        platform,
+        ...(platform === 'thread' ? { variant: prepared.variant } : {}),
+        system: prepared.system,
+        user: prepared.user,
+      }
+      return emitSuccess(io, values.json, payload, `${prepared.system}\n\n---\n\n${prepared.user}`)
+    }
+    const ctx = resolveCtx(io, values, secrets)
+    const record = await generateDerivative(ctx, store, {
+      id,
+      platform,
+      variant: values.variant,
+      confirmOverwrite: values.force,
+      root: dataDir,
+    })
+    const warnText = record.warnings?.length ? `\n\n提醒：\n${record.warnings.map(w => `- ${w}`).join('\n')}` : ''
+    let human
+    if (platform === 'thread') {
+      human = `${threadClipboardText(record.payload.posts)}${warnText}`
+    } else {
+      const outline = record.payload.cards.map((card, i) => `[${i + 1}/${record.payload.cards.length} ${card.kind}] ${card.heading}${card.lines.length ? ` — ${card.lines.join(' / ')}` : ''}`).join('\n')
+      human = `${xhsClipboardText(record.payload)}\n\n---\n卡片大纲：\n${outline}\n\n提示：卡片 PNG 请在插件「一稿多发」页导出。${warnText}`
+    }
+    return emitSuccess(io, values.json, { id, ...record }, human)
+  }
+  throw new UsageError(`未知的 derive 子命令：${action}（支持 markdown、thread、xhs）`)
+}
+
 export async function runCli(argv = [], rawIo = {}) {
   const io = {
     stdin: rawIo.stdin ?? process.stdin,
@@ -1176,6 +1289,7 @@ export async function runCli(argv = [], rawIo = {}) {
       case 'style': return await handleStyle(subArgv, io, secrets)
       case 'settings': return await handleSettings(subArgv, io, secrets)
       case 'draft': return await handleDraft(subArgv, io, secrets)
+      case 'derive': return await handleDerive(subArgv, io, secrets)
       default:
         throw new UsageError(`未知命令：${command}。运行 wechat-studio --help 查看可用子命令。`)
     }

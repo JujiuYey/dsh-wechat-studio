@@ -67,4 +67,11 @@ wechat-studio settings set --author "你的公众号名" --slogan "一句话介�
 # 9. 公众号草稿箱推送（支持 --dry-run 本地预检，也支持环境变量 WECHAT_APP_ID / WECHAT_APP_SECRET）
 wechat-studio draft verify --json
 wechat-studio draft push article.md --style neo --theme forest --banner banner.json --follow-card --cover cover.png --json
+
+# 10. 一稿多发（基于工作区稿件库已成稿导出通用 Markdown、串推、小红书）
+wechat-studio derive markdown <articleId> --target zhihu --out zhihu.md --json
+wechat-studio derive thread <articleId> --variant x --prompt-only --json
+wechat-studio derive xhs <articleId> --prompt-only --json
+# 或直连模型生成并回写工作区：
+wechat-studio derive thread <articleId> --variant jike --force --json
 ```
