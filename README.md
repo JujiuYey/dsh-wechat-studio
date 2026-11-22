@@ -188,6 +188,18 @@ dsh plugin --profile desktop remove dsh-wechat-studio
 
 直接导入微信公众号后台的 XLS，查看账号趋势、用户增长、单篇明细和流量来源。按题材和标题套路比较文章表现，记录下一次要试什么；数据提炼出的写作规则，确认后可以保存为 Skill。
 
+### 06 · 一稿多发
+
+**把打磨好的公众号母稿，直接拆成其他平台形态。**
+
+在文章顶部切换到「一稿多发」，从同一份母稿单向派生三种内容：
+
+- **通用 Markdown**：零模型调用确定性导出，自动剔除公众号关注引导语、高亮/下划线语法，并将 SVG 动画卡降级为可读列表或表格，支持知乎、掘金和通用博客格式（知乎不重复输出一级标题）。
+- **即刻 / X 串推**：结合个人声音与平台技能提炼 3～15 条独立成段的串推，代码校验 X 加权字数（≤270）与即刻字数上限，带 1/n 编号一键复制。
+- **小红书图文**：提炼 5～8 页高密度金句与清单卡片 + 标题（≤20 字）+ 正文 + 标签。卡片在浏览器内按当前排版主题配色模板渲染为 1080×1440 PNG（封面 AI 生图将在后续开放），支持单张导出或批量打包为 `.zip`。
+
+派生稿挂在母稿下可独立手改，不进入排期也不自动发布；母稿改动后会提示派生可能过期，手改过的派生稿重新生成前会再次确认。
+
 ## CLI 与外部 Agent
 
 **不装 DeepSeek Harness 也能用。** 在完整保留 DSH 插件能力的同时，本仓库提供独立零依赖 CLI `wechat-studio`（需要 Node.js 20+），可供 Claude Code、WorkBuddy、Cursor、Codex 等外部 Agent 或自动化脚本直接调用。
@@ -244,6 +256,7 @@ npm install -g dsh-wechat-studio
 | `style` | 管理个人写作风格（`status` / `analyze` / `preview` / `apply` / `restore`） | `wechat-studio style analyze sample1.md --prompt-only --json` |
 | `articles` | 管理共享稿件库（`list` / `get` / `import`） | `cat article.md \| wechat-studio articles import - --json` |
 | `insights` | 导入公众号后台 XLS 并汇总复盘指标 | `wechat-studio insights summary --range 30 --json` |
+| `derive` | 一稿多发（`markdown` / `thread` / `xhs`，支持 `--prompt-only`） | `wechat-studio derive markdown <id> --target zhihu --json` |
 
 ## 深入使用
 
@@ -327,7 +340,7 @@ an OVERSIZED, RELAXED-FIT heavyweight waffle-knit short-sleeve polo shirt in Mid
 
 未保存的段落文字和上次编辑位置保存在当前宿主的本地存储中。调用模型、朱雀、火山方舟、阿里云百炼或 Cloudinary 时，相应任务的数据会发送给所用服务。
 
-可覆盖的内置技能包括 [写作](skills/writer.md)、[标题](skills/headline.md)、[去 AI 味](skills/humanizer.md)、[朱雀流程](skills/zhuque.md)和[开头横幅](skills/banner.md)。将同名文件放进数据目录的 `skills/`，下一次调用就会读取该版本。
+可覆盖的内置技能包括 [写作](skills/writer.md)、[标题](skills/headline.md)、[去 AI 味](skills/humanizer.md)、[朱雀流程](skills/zhuque.md)、[开头横幅](skills/banner.md)、[串推派生](skills/repurpose-thread.md)和[小红书派生](skills/repurpose-xhs.md)。将同名文件放进数据目录的 `skills/`，下一次调用就会读取该版本。
 
 [封面技能](skills/linyuebanzi-cover-banner/SKILL.md)从插件内置目录读取。风格模板与禁用词表位于同目录的 [references](skills/linyuebanzi-cover-banner/references/)，封面生成时会重新读取。
 
