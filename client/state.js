@@ -42,6 +42,7 @@ async function request(path, options) {
   if (!res.ok) {
     const error = new Error(body?.error || `请求失败（${res.status}）`)
     error.status = res.status
+    if (body?.code) error.code = body.code
     throw error
   }
   return body
@@ -208,6 +209,51 @@ export async function copyMarkdown() {
   } catch (err) {
     toast(err.message, true)
   }
+}
+
+export function loadPortableMarkdown(id, target = 'blog', signal) {
+  return request(`derive/markdown?${new URLSearchParams({ id, target })}`, signal ? { signal } : undefined)
+}
+
+export async function generateDerivative({ id, platform, variant, confirmOverwrite = false }) {
+  setState({ pending: `derive/${platform}` })
+  try {
+    const data = await postJson('derive/generate', {
+      id: id ?? snap.data?.current?.id,
+      platform,
+      variant,
+      confirmOverwrite,
+    })
+    accept(data)
+    return { ok: true }
+  } catch (err) {
+    if (err.status === 409 && err.code === 'edited') {
+      return { ok: false, needsConfirm: true }
+    }
+    toast(err.message, true)
+    return { ok: false }
+  } finally {
+    setState({ pending: null })
+  }
+}
+
+export function saveDerivative({ id, platform, payload }) {
+  return act('derive/update', { id, platform, payload })
+}
+
+export function deleteDerivative({ id, platform }) {
+  return act('derive/delete', { id, platform })
+}
+
+export function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
 
 export async function loadLayout() {

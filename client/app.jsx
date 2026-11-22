@@ -12,6 +12,7 @@ import { COVER_STYLES } from '../src/cover-styles.js'
 import React from 'react'
 import { cardMarkdown, emphasisFormats, formatSelection, insertFormats } from './editor-format.js'
 import { act, copyDetectionText, copyMarkdown, copyText, countCurrentParagraphDrafts, getState, loadLayout, loadModels, loadRevisions, loadSettings, loadSkills, loadStyleProfile, loadVersion, openStyleWizard, previewMarkdownReimport, reimportMarkdown, rememberArticleView, saveSettings, setState, testWechat, testZhuque, toast, uploadImage, uploadPortrait, uploadReport, useStudio } from './state.js'
+import { DeriveView } from './derive.jsx'
 import { isDraftReady, readMinutes, summarizeDraftHome } from './draft-home-model.js'
 import { FeedCardPreview } from './feed-preview.jsx'
 import { InsightsView } from './insights.jsx'
@@ -1991,6 +1992,8 @@ const SKILL_INFO = {
   cover: { name: '封面生成', use: '按文章和所选风格填写封面提示词。技能、六套风格模板和禁用词表都在内置技能目录。' },
   'inline-diagram': { name: '正文插图', use: '识别插图位置，从技能目录动态读取全部风格。可在覆盖目录中增加或覆盖风格文件。' },
   'wechat-svg-cards': { name: '公众号动画卡片', use: '按段落生成概念、步骤、对比、数据与演示卡，使用同一排版引擎导出 SMIL 动画。' },
+  'repurpose-thread': { name: '一稿多发 · 串推', use: '从母稿挑选并压缩核心观点，生成即刻动态串或 X 串推。' },
+  'repurpose-xhs': { name: '一稿多发 · 小红书', use: '把母稿拆解为 5～8 页高密度小红书卡片及标题、正文与标签。' },
 }
 
 function Rail({ module }) {
@@ -2042,7 +2045,7 @@ function SkillsView() {
           </div>
         </header>
         <WritingStyleCard />
-        <p className="ws-page-lead">这里显示插件当前使用的技能。写作、标题、去 AI 味、朱雀流程和开头横幅可以通过下方目录覆盖。封面和正文插图使用目录式技能；正文插图支持在覆盖目录中增加或覆盖风格。</p>
+        <p className="ws-page-lead">这里显示插件当前使用的技能。写作、标题、去 AI 味、朱雀流程、开头横幅和一稿多发可以通过下方目录覆盖。封面和正文插图使用目录式技能；正文插图支持在覆盖目录中增加或覆盖风格。</p>
         <div className="ws-skill-list">
           {skills.skills.map(item => (
             <div className="ws-skill" key={item.name}>
@@ -2183,6 +2186,7 @@ function PaperModule({ data }) {
         <div className="ws-tabs" role="tablist" aria-label="视图">
           <button type="button" role="tab" aria-selected={view === 'paper'} className={view === 'paper' ? 'is-on' : ''} onClick={() => openArticleView(article, 'paper')}>稿面</button>
           <button type="button" role="tab" aria-selected={view === 'layout'} className={view === 'layout' ? 'is-on' : ''} onClick={() => openArticleView(article, 'layout')}>排版预览</button>
+          <button type="button" role="tab" aria-selected={view === 'derive'} className={view === 'derive' ? 'is-on' : ''} onClick={() => setState({ view: 'derive', editing: null })}>一稿多发</button>
         </div>
         {article.canUndo ? <button type="button" className="ws-btn" disabled={Boolean(article.job)} onClick={() => setState({ dialog: 'revisions' })}>改稿对比</button> : null}
         {article.canUndo ? <button type="button" className="ws-icon-btn" aria-label="撤销上一步" title="撤销上一步" disabled={Boolean(article.job)} onClick={() => act('undo')}><Icon name="undo" /></button> : null}
@@ -2214,9 +2218,9 @@ function PaperModule({ data }) {
           <button type="button" className="ws-icon-btn" aria-label="关闭提示" onClick={() => act('notice/clear', {}, { quiet: true })}><Icon name="close" size={14} /></button>
         </div>
       ) : null}
-      <div className={`ws-body ${chatOpen && view !== 'layout' ? '' : 'no-chat'}`}>
-        {chatOpen && view !== 'layout' ? <ChatPane article={article} /> : null}
-        <main className="ws-main">{view === 'layout' ? <LayoutView article={article} brand={data.brand} mp={data.mp} /> : <Paper article={article} reviewTarget={reviewTarget} />}</main>
+      <div className={`ws-body ${chatOpen && view === 'paper' ? '' : 'no-chat'}`}>
+        {chatOpen && view === 'paper' ? <ChatPane article={article} /> : null}
+        <main className="ws-main">{view === 'layout' ? <LayoutView article={article} brand={data.brand} mp={data.mp} /> : view === 'derive' ? <DeriveView article={article} brand={data.brand} /> : <Paper article={article} reviewTarget={reviewTarget} />}</main>
         {view === 'paper' ? <SidePane key={article.id} article={article} tab={sideTab} onTab={selectSideTab} tabId={sideTabId} flagged={flagged} retest={retest} ready={data.zhuqueReady} reviewTarget={reviewTarget} onReviewJump={jumpToReview} cloudinaryReady={data.cloudinaryReady} unsavedCount={unsavedParagraphCount(article)} /> : null}
       </div>
     </>

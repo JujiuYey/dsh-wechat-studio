@@ -65,6 +65,34 @@ const replies = {
       reason: '帮读者看清关键内容和处理顺序。', brief: '三个节点：Markdown 原稿 → 排版流程 → 公众号成稿，箭头从左到右。',
     })) })
   },
+  'derive-thread': user => {
+    const { blocks } = JSON.parse(user)
+    const ids = blocks.map(b => b.id)
+    return JSON.stringify({
+      posts: [
+        { text: '写完公众号长文后，排版这件事我早就不自己手调了。', source: ids.slice(0, 1) },
+        { text: '把 Markdown 直接交给固定排版流程，标题、引用和代码块全部自动对齐，省下整晚折腾样式的时间。', source: ids.slice(1, 3) },
+        { text: '好排版，本质上是让读者根本感觉不到排版。', source: ids.slice(2, 4) },
+        { text: '你平时写完一篇文章后，排版还要花多久？', source: [] },
+      ],
+    })
+  },
+  'derive-xhs': user => {
+    const { blocks } = JSON.parse(user)
+    const ids = blocks.map(b => b.id)
+    return JSON.stringify({
+      title: '排版外包给 AI 后真香',
+      body: '以前写完一篇文章，最消耗耐心的反而是最后半小时的排版调样式。后来我干脆把排版固定成一条流水线：写完 Markdown 直接导出成稿，不再手动调字号、行距和配色。这套流程最大的好处是稳定，不用每次重来，也不必纠结样式细节，欢迎自取尝试。',
+      tags: ['内容创作', '公众号排版', '效率工具', 'Markdown'],
+      cards: [
+        { kind: 'cover', heading: '别再手动排版了', lines: ['写完 Markdown 直接出稿'], source: ids.slice(0, 1) },
+        { kind: 'quote', heading: '核心原则', lines: ['好排版，是让读者感觉不到排版。'], source: ids.slice(1, 3) },
+        { kind: 'list', heading: '省时间的三个关键', lines: ['先定死主题和样式表', '代码块引用块自动处理', '导出前只过一遍体检清单'], source: ids.slice(0, 3) },
+        { kind: 'quote', heading: '真实体验', lines: ['写完 Markdown 丢进去，回来就是能直接贴进编辑器的版式。'], source: ids.slice(1, 2) },
+        { kind: 'end', heading: '收藏这条慢慢用', lines: ['公众号同款流程持续更新中'], source: [] },
+      ],
+    })
+  },
 }
 
 const llm = {
