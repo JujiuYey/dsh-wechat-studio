@@ -145,17 +145,26 @@ function isImageUnsupportedError(err) {
   return /unsupported_content|does_not_support_images|does not support image|inputmodalit|image.*not.*support|vision.*not.*support|multimodal.*not.*support|unknown content type.*image|不支持.*图|不支持识图|不支持视觉/i.test(msg)
 }
 
-function buildUserContent(user, images) {
+async function buildUserContent(ctx, user, images) {
   const parts = [{ type: 'text', text: user }]
+  const attachments = ctx.get('attachments')
   for (const dataUrl of Array.isArray(images) ? images : []) {
     const parsed = parseDataImageUri(dataUrl)
     if (!parsed) continue
-    parts.push({
-      type: 'image',
-      mediaType: parsed.mediaType,
-      mimeType: parsed.mediaType,
-      data: parsed.data,
-    })
+    if (attachments?.saveImage) {
+      const attachment = await attachments.saveImage({
+        data: Buffer.from(parsed.data, 'base64'),
+        mediaType: parsed.mediaType,
+      })
+      parts.push({ type: 'image', attachment })
+    } else {
+      parts.push({
+        type: 'image',
+        mediaType: parsed.mediaType,
+        mimeType: parsed.mediaType,
+        data: parsed.data,
+      })
+    }
   }
   return parts
 }
@@ -176,7 +185,7 @@ export async function callModel(ctx, { system, user, images = [], task, maxToken
   const runOnce = async useImages => {
     const call = await llm.prepareCall({ provider: info.provider, model: info.model, maxTokens }, signal, controls => controls)
     let text = ''
-    const content = buildUserContent(user, useImages ? validImages : [])
+    const content = await buildUserContent(ctx, user, useImages ? validImages : [])
     for await (const chunk of call.stream({
       ...call.config,
       system,

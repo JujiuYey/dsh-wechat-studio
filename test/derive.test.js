@@ -3,7 +3,7 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { loadSkill, skillSources, extractJson } from '../src/ai.js'
+import { callModel, loadSkill, skillSources, extractJson } from '../src/ai.js'
 import { createArticle } from '../src/article.js'
 import {
   articleSourceHash,
@@ -599,6 +599,51 @@ test('extractJson 遇到 <xhs-meta> 后紧跟 <xhs-style> 时不被 CSS 花括�
   assert.ok(designingSteps.includes(1), '第 1 张闭合后应立刻上报 1/5')
   assert.ok(designingSteps.includes(2), '第 2 张闭合后应立刻上报 2/5')
   assert.ok(designingSteps.includes(5), '全部完成后应上报 5/5')
+})
+
+test('DSH 参考图先保存为附件，再以 attachment 图片块调用模型', async () => {
+  const tinyPng = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=='
+  const attachment = {
+    attachmentId: 'sha256:reference-image',
+    mediaType: 'image/png',
+    bytes: 68,
+    width: 1,
+    height: 1,
+  }
+  const saved = []
+  const seen = []
+  const attachments = {
+    async saveImage(input) {
+      saved.push(input)
+      return attachment
+    },
+  }
+  const llm = {
+    async listModels() {
+      return [{ id: 'm', inputModalities: ['text', 'image'] }]
+    },
+    prepareCall() {
+      return {
+        config: {},
+        async *stream({ messages }) {
+          for (const part of messages[0].content) {
+            if (part.type === 'image') seen.push(part.attachment.attachmentId)
+          }
+          yield { type: 'text-delta', text: 'ok' }
+          yield { type: 'finish', reason: { kind: 'stop' } }
+        },
+      }
+    },
+  }
+  const services = { llm, attachments, agentDefaultModel: { currentSelection: () => ({ provider: 'p', model: 'm' }) } }
+  const ctx = { get: name => services[name] ?? null }
+
+  assert.equal(await callModel(ctx, { system: 'sys', user: 'usr', images: [tinyPng], task: 'vision-test' }), 'ok')
+  assert.deepEqual(seen, [attachment.attachmentId])
+  assert.equal(saved.length, 1)
+  assert.equal(saved[0].mediaType, 'image/png')
+  assert.ok(saved[0].data instanceof Uint8Array)
+  assert.equal(Buffer.from(saved[0].data).toString('base64'), tinyPng.split(',')[1])
 })
 
 test('小红书整套生成与单页重设计支持上传参考图，且纯文本模型自动降级并给出提示', async () => {
