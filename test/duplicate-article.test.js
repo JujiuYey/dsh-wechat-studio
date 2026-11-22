@@ -58,6 +58,7 @@ test('创建完整副本：内容、配置和资源独立，工作及发布状�
     scheduledFor: '2026-11-20T10:00:00.000+08:00', publishedAt: '2026-11-18T10:00:00.000+08:00',
     publishMarkedAt: '2026-11-18T10:01:00.000+08:00', archivedAt: '2026-11-18T11:00:00.000+08:00',
     imageImport: { remaining: 1 }, notice: { text: '旧提示' }, inlineMessage: { text: '旧插图提示' }, coverError: '旧封面错误',
+    derivatives: { thread: { platform: 'thread', variant: 'jike', sourceHash: 'abc', createdAt: '2026-11-01T00:00:00.000Z', editedAt: null, payload: { variant: 'jike', posts: [] }, warnings: [] } },
   })
   source.blocks[0].check = { status: 'flag', score: 0.9 }
   source.blocks[0].prev = '旧第一段。'
@@ -84,6 +85,7 @@ test('创建完整副本：内容、配置和资源独立，工作及发布状�
   assert.deepEqual(copy.chat, [])
   assert.deepEqual(copy.history, [])
   assert.deepEqual(copy.zhuque, { round: 0, lastAt: null })
+  assert.deepEqual(copy.derivatives, {})
   for (const key of ['archivedAt', 'scheduledFor', 'publishedAt', 'publishMarkedAt', 'imageImport', 'notice', 'inlineMessage', 'coverError']) assert.equal(copy[key], undefined)
   assert.equal(copy.blocks.length, source.blocks.length)
   copy.blocks.forEach((block, index) => {

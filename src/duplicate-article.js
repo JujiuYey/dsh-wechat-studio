@@ -102,6 +102,7 @@ export async function duplicateArticle(root, source) {
       anchorId: blockIds.get(item.anchorId), insertedBlockId: blockIds.get(item.insertedBlockId),
       ...(item.assetId ? { assetId: diagrams.ids.get(item.assetId) } : {}),
     })),
+    derivatives: {},
   })
   for (const block of article.blocks) delete block.prev
   for (const key of ['archivedAt', 'scheduledFor', 'publishedAt', 'publishMarkedAt', 'imageImport', 'notice', 'inlineMessage', 'coverError', 'coverHistory', 'svgCardInsertions']) delete article[key]

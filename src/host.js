@@ -10,6 +10,10 @@ import { MAX_LOCAL_IMAGE, transferFeishuImages, uploadInlineImage, uploadLocalIm
 import { feishuImageUrls, replaceFeishuImages } from './markdown-images.js'
 import { applyMarkdownReimport, planMarkdownReimport } from './markdown-reimport.js'
 import { generateInlineImage, readInlineAsset, readInlineImage, removeInlineImages, removeOrphanInlineImages, saveInlineImage } from './inline-assets.js'
+import { THEMES as THEME_COLORS } from '../vendor/layout/layout.js'
+import { deleteDerivative, derivativesView, generateDerivative, updateDerivative } from './derive.js'
+import { toPortableMarkdown } from './derive-markdown.js'
+import { DERIVE_PLATFORMS } from './derive-shared.js'
 import { coverRuns, duplicateArticle } from './duplicate-article.js'
 import { analyzeInlineDiagrams, DIAGRAM_KINDS, insertDiagramBlock, sourceHash } from './inline-diagrams.js'
 import { loadInlineStyle, readInlineStyleCatalog } from './inline-skill.js'
@@ -76,6 +80,12 @@ async function insightsView(deps, range = 'all') {
 const imageJobs = new WeakMap()
 const coverJobs = new WeakMap()
 const diagramJobs = new WeakMap()
+const deriveJobs = new WeakMap()
+
+function deriveJobSet(store) {
+  if (!deriveJobs.has(store)) deriveJobs.set(store, new Set())
+  return deriveJobs.get(store)
+}
 
 function coverJobMap(store) {
   if (!coverJobs.has(store)) coverJobs.set(store, new Map())
@@ -357,6 +367,8 @@ function view(article, pipeline, store, inlineStyles = [], inlineStyleWarnings =
       }
     }
   }
+  const effectiveLayoutPreferences = resolveLayoutPreferences(settings, article)
+  const themeColors = THEME_COLORS[effectiveLayoutPreferences.theme] ?? THEME_COLORS.orange
   return {
     id: article.id, topic: article.topic, title: article.title, titles: article.titles, summary: article.summary,
     publishedAt: article.publishedAt ?? null,
@@ -368,7 +380,15 @@ function view(article, pipeline, store, inlineStyles = [], inlineStyleWarnings =
     banner: bannerView(article),
     followCard: article.followCard === true,
     layoutPreferences: article.layoutPreferences ?? null,
-    effectiveLayoutPreferences: resolveLayoutPreferences(settings, article),
+    effectiveLayoutPreferences,
+    derivatives: derivativesView(article),
+    xhsPalette: {
+      main: themeColors.main,
+      soft: themeColors.soft,
+      tint: themeColors.tint,
+      line: themeColors.line,
+      mark: themeColors.mark,
+    },
     fixPlan: (({ picked, skipped }) => ({ count: picked.length, skipped }))(fixPlan(article)),
     chat: article.chat.slice(-40), canUndo: article.history.length > 0, zhuque: article.zhuque, notice: article.notice ?? null,
     job: pipeline.job(article.id),
@@ -538,6 +558,11 @@ export async function route(deps, req, res) {
       return json(res, 200, { revisions: revisionChanges(article) })
     }
     if (path === 'markdown') return json(res, 200, { markdown: toMarkdown(article) })
+    if (path === 'derive/markdown') {
+      const target = url.searchParams.get('target') || 'blog'
+      const settings = await readSettings(store.root)
+      return json(res, 200, { ...toPortableMarkdown(article, { target, fixedLines: settings.fixedLines }), target })
+    }
     if (path === 'detection-text') {
       const settings = await readSettings(store.root)
       return json(res, 200, { text: await detectionText(toMarkdown(article), settings.fixedLines) })
@@ -1246,6 +1271,43 @@ export async function route(deps, req, res) {
         skills: await skillSources(join(store.root, 'skills')),
       })
     }
+    case 'derive/generate': {
+      const state = await store.read()
+      const article = mustFind(state, body.id)
+      if (!DERIVE_PLATFORMS.includes(body.platform)) {
+        return json(res, 400, { error: `不支持的派生平台：${body.platform}（可选：${DERIVE_PLATFORMS.join('、')}）。` })
+      }
+      const jobs = deriveJobSet(store)
+      const lockKey = `${article.id}:${body.platform}`
+      if (jobs.has(lockKey)) return json(res, 409, { error: '这个平台的派生正在生成，请稍候。' })
+      jobs.add(lockKey)
+      try {
+        await generateDerivative(ctx, store, {
+          id: article.id,
+          platform: body.platform,
+          variant: body.variant,
+          confirmOverwrite: body.confirmOverwrite === true,
+        })
+      } catch (err) {
+        if (err.code) return json(res, err.status || 409, { error: err.message, code: err.code })
+        throw err
+      } finally {
+        jobs.delete(lockKey)
+      }
+      return ok()
+    }
+    case 'derive/update': {
+      const state = await store.read()
+      const article = mustFind(state, body.id)
+      await updateDerivative(store, { id: article.id, platform: body.platform, payload: body.payload })
+      return ok()
+    }
+    case 'derive/delete': {
+      const state = await store.read()
+      const article = mustFind(state, body.id)
+      await deleteDerivative(store, { id: article.id, platform: body.platform })
+      return ok()
+    }
     case 'style/restore': {
       const result = await restoreDefaultStyle(store.root, { restoreBackup: body.restoreBackup === true })
       return json(res, 200, {
@@ -1295,7 +1357,7 @@ export function createHandler(ctx, { store = new Store(), fetchImpl } = {}) {
       await route(deps, req, res)
     } catch (err) {
       if (res.headersSent) return res.end()
-      json(res, err.status || 500, { error: err.message })
+      json(res, err.status || 500, { error: err.message, ...(err.code ? { code: err.code } : {}) })
     }
   }
 }
