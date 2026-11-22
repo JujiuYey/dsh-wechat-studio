@@ -1347,7 +1347,7 @@ function XhsPanel({ article, brand, pending, onGenerate, onDelete }) {
             const files = extractClipboardImageFiles(event)
             if (files.length) {
               event.preventDefault()
-              void appendRefImages(files, { max: 3, currentCount: deckRefImages.length, setter: setDeckRefImages, label: '整套设计' })
+              void appendRefImages(files, { max: DERIVE_LIMITS.xhs.referenceImages, currentCount: deckRefImages.length, setter: setDeckRefImages, label: '整套设计' })
             }
           }}
         />
@@ -1359,7 +1359,7 @@ function XhsPanel({ article, brand, pending, onGenerate, onDelete }) {
           hidden
           onChange={event => {
             const files = event.target.files
-            void appendRefImages(files, { max: 3, currentCount: deckRefImages.length, setter: setDeckRefImages, label: '整套设计' })
+            void appendRefImages(files, { max: DERIVE_LIMITS.xhs.referenceImages, currentCount: deckRefImages.length, setter: setDeckRefImages, label: '整套设计' })
             event.target.value = ''
           }}
         />
@@ -1367,11 +1367,11 @@ function XhsPanel({ article, brand, pending, onGenerate, onDelete }) {
           type="button"
           className="ws-btn"
           style={{ fontSize: '12px', padding: '5px 10px', whiteSpace: 'nowrap' }}
-          disabled={busy || archived || deckRefImages.length >= 3}
+          disabled={busy || archived || deckRefImages.length >= DERIVE_LIMITS.xhs.referenceImages}
           onClick={() => deckRefInputRef.current?.click()}
-          title="上传视觉参考图（最多 3 张，也可在输入框内直接粘贴截图）"
+          title={`上传视觉参考图（最多 ${DERIVE_LIMITS.xhs.referenceImages} 张，也可在输入框内直接粘贴截图）`}
         >
-          🖼 参考图{deckRefImages.length > 0 ? ` (${deckRefImages.length}/3)` : ''}
+          🖼 参考图 ({deckRefImages.length}/{DERIVE_LIMITS.xhs.referenceImages})
         </button>
         {designPrompt ? (
           <button type="button" className="ws-link" disabled={busy} onClick={() => setDesignPrompt('')}>
@@ -1379,6 +1379,9 @@ function XhsPanel({ article, brand, pending, onGenerate, onDelete }) {
           </button>
         ) : null}
       </div>
+      <span className="ws-cd-vision-hint">
+        最多上传 {DERIVE_LIMITS.xhs.referenceImages} 张。模型会自动识别封面与内容版式并按页参考；参考图可复用，未分配页面将自由设计。
+      </span>
       {deckRefImages.length > 0 ? (
         <div className="ws-cd-ref-strip" aria-label="已上传的整套设计参考图">
           {deckRefImages.map((src, idx) => (

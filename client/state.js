@@ -1,5 +1,6 @@
 // 浏览器侧的状态：Host 状态的本地镜像，加上只属于界面的视图、弹窗等。
 import React from 'react'
+import { DERIVE_LIMITS } from '../src/derive-shared.js'
 import { isNewerRelease } from '../src/version.js'
 import { deriveDraftKey, mergeRedesignedXhsCardDraft, xhsCardDraftSignature } from './derive-draft-model.js'
 
@@ -279,7 +280,9 @@ export async function generateDerivative({
   const targetId = id ?? snap.data?.current?.id
   setState({ pending: `derive/${platform}` })
   try {
-    const cleanRefs = Array.isArray(referenceImages) ? referenceImages.filter(Boolean).slice(0, 3) : []
+    const cleanRefs = Array.isArray(referenceImages)
+      ? referenceImages.filter(Boolean).slice(0, DERIVE_LIMITS.xhs.referenceImages)
+      : []
     const data = await postJson('derive/generate', {
       id: targetId,
       platform,

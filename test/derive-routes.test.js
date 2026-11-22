@@ -317,8 +317,7 @@ test('POST derive/generate 支持小红书 async=true 后台渐进式生成并�
   assert.fail('xhsJob 未在预期时间内完成')
 })
 
-test('GET state 透出 modelSupportsImages，且 derive/generate 与 derive/redesign-card 透传 referenceImages', async () => {
-  const tinyPng = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=='
+test('GET state 透出 modelSupportsImages，且 derive/generate 与 derive/redesign-card 透传参考图并限制数量', async () => {
   const { article, request, setOutput, seenContents, setModalities } = await setup()
   const [b1, b2] = article.blocks
 
@@ -348,18 +347,26 @@ test('GET state 透出 modelSupportsImages，且 derive/generate 与 derive/rede
   const gen = await request('derive/generate', {
     id: article.id,
     platform: 'xhs',
-    referenceImages: [tinyPng],
+    referenceImages: Array.from({ length: 12 }, (_, index) => (
+      `data:image/png;base64,${Buffer.from(`route-reference-${index}`).toString('base64')}`
+    )),
   })
   assert.equal(gen.status, 200)
-  assert.ok(seenContents[0].some(p => p.type === 'image' && p.mediaType === 'image/png'))
+  assert.equal(seenContents[0].filter(p => p.type === 'image' && p.mediaType === 'image/png').length, 10)
+  assert.deepEqual(
+    seenContents[0].filter(p => p.type === 'text' && /^\[参考图 /.test(p.text)).map(p => p.text),
+    Array.from({ length: 10 }, (_, index) => `[参考图 ref-${index + 1}]`),
+  )
 
   setOutput('<xhs-card page="2"><div class="ref-redesign"><h2>按参考图重设计</h2></div></xhs-card>')
   const rd = await request('derive/redesign-card', {
     id: article.id,
     cardIndex: 1,
     cardPrompt: '参考这张图的布局',
-    referenceImages: [tinyPng],
+    referenceImages: Array.from({ length: 12 }, (_, index) => (
+      `data:image/png;base64,${Buffer.from(`redesign-reference-${index}`).toString('base64')}`
+    )),
   })
   assert.equal(rd.status, 200)
-  assert.ok(seenContents.at(-1).some(p => p.type === 'image' && p.mediaType === 'image/png'))
+  assert.equal(seenContents.at(-1).filter(p => p.type === 'image' && p.mediaType === 'image/png').length, 2)
 })
