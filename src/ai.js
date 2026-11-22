@@ -148,9 +148,14 @@ function isImageUnsupportedError(err) {
 async function buildUserContent(ctx, user, images) {
   const parts = [{ type: 'text', text: user }]
   const attachments = ctx.get('attachments')
-  for (const dataUrl of Array.isArray(images) ? images : []) {
+  for (const image of Array.isArray(images) ? images : []) {
+    const dataUrl = typeof image === 'string' ? image : image?.dataUrl
+    const id = typeof image?.id === 'string' && /^ref-(?:[1-9]|10)$/.test(image.id)
+      ? image.id
+      : ''
     const parsed = parseDataImageUri(dataUrl)
     if (!parsed) continue
+    if (id) parts.push({ type: 'text', text: `[参考图 ${id}]` })
     if (attachments?.saveImage) {
       const attachment = await attachments.saveImage({
         data: Buffer.from(parsed.data, 'base64'),
@@ -173,14 +178,17 @@ async function buildUserContent(ctx, user, images) {
  * 调一次模型并流式回传文本。插件在会话之外调模型，所以自己带一个会话标识。
  * 支持可选传入 images（data:image/...;base64,...）：若当前模型不支持识图，自动优雅降级为纯文本重试并触发 onImageFallback。
  * @param {object} ctx - Cordis 上下文。
- * @param {{system: string, user: string, images?: string[], task: string, maxTokens?: number, signal?: AbortSignal, onText?: (delta: string) => void, onImageFallback?: (reason: string) => void}} request - 请求。
+ * @param {{system: string, user: string, images?: Array<string | {id: string, dataUrl: string}>, task: string, maxTokens?: number, signal?: AbortSignal, onText?: (delta: string) => void, onImageFallback?: (reason: string) => void}} request - 请求。
  * @returns {Promise<string>} 完整文本。
  */
 export async function callModel(ctx, { system, user, images = [], task, maxTokens = 8000, signal, onText, onImageFallback }) {
   const info = modelInfo(ctx)
   if (!info) throw new Error('当前没有可用模型，请先在 DeepSeek Harness 里配置好模型')
   const llm = ctx.get('llm')
-  const validImages = (Array.isArray(images) ? images : []).filter(url => Boolean(parseDataImageUri(url)))
+  const validImages = (Array.isArray(images) ? images : []).filter(image => {
+    const dataUrl = typeof image === 'string' ? image : image?.dataUrl
+    return Boolean(parseDataImageUri(dataUrl))
+  })
 
   const runOnce = async useImages => {
     const call = await llm.prepareCall({ provider: info.provider, model: info.model, maxTokens }, signal, controls => controls)

@@ -612,6 +612,7 @@ test('DSH 参考图先保存为附件，再以 attachment 图片块调用模型'
   }
   const saved = []
   const seen = []
+  let messages
   const attachments = {
     async saveImage(input) {
       saved.push(input)
@@ -625,7 +626,8 @@ test('DSH 参考图先保存为附件，再以 attachment 图片块调用模型'
     prepareCall() {
       return {
         config: {},
-        async *stream({ messages }) {
+        async *stream({ messages: incomingMessages }) {
+          messages = incomingMessages
           for (const part of messages[0].content) {
             if (part.type === 'image') seen.push(part.attachment.attachmentId)
           }
@@ -638,8 +640,12 @@ test('DSH 参考图先保存为附件，再以 attachment 图片块调用模型'
   const services = { llm, attachments, agentDefaultModel: { currentSelection: () => ({ provider: 'p', model: 'm' }) } }
   const ctx = { get: name => services[name] ?? null }
 
-  assert.equal(await callModel(ctx, { system: 'sys', user: 'usr', images: [tinyPng], task: 'vision-test' }), 'ok')
+  assert.equal(await callModel(ctx, { system: 'sys', user: 'usr', images: [{ id: 'ref-1', dataUrl: tinyPng }], task: 'vision-test' }), 'ok')
   assert.deepEqual(seen, [attachment.attachmentId])
+  assert.equal(messages[0].content[1].type, 'text')
+  assert.equal(messages[0].content[1].text, '[参考图 ref-1]')
+  assert.equal(messages[0].content[2].type, 'image')
+  assert.equal(messages[0].content[2].attachment.attachmentId, attachment.attachmentId)
   assert.equal(saved.length, 1)
   assert.equal(saved[0].mediaType, 'image/png')
   assert.ok(saved[0].data instanceof Uint8Array)

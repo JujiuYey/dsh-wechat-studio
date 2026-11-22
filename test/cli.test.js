@@ -180,6 +180,19 @@ test('createStandaloneCtx 将参考图转为 OpenAI image_url 多模态消息，
     image_url: { url: tinyPng },
   })
 
+  await callModel(visionCtx, {
+    system: 'sys',
+    user: 'hello',
+    images: [{ id: 'ref-2', dataUrl: tinyPng }],
+    task: 'vision-id-test',
+  })
+  assert.deepEqual(requests[1].messages[1].content[0], { type: 'text', text: 'hello' })
+  assert.deepEqual(requests[1].messages[1].content[1], { type: 'text', text: '[参考图 ref-2]' })
+  assert.deepEqual(requests[1].messages[1].content[2], {
+    type: 'image_url',
+    image_url: { url: tinyPng },
+  })
+
   // 模型返回不支持图片输入时，自动降级为纯文本并回调 onImageFallback
   const fallbackReqs = []
   let fallbackNotice = ''
