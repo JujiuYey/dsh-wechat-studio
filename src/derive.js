@@ -129,9 +129,12 @@ function platformContractSection(platform, variant) {
     `- 中间页可选 compare / steps / metrics / grid / list / quote：compare（${xhs.compare.lines[0]}–${xhs.compare.lines[1]} 行，≤ ${xhs.compare.lineChars} 字）、steps（${xhs.steps.lines[0]}–${xhs.steps.lines[1]} 行，≤ ${xhs.steps.lineChars} 字）、metrics（${xhs.metrics.lines[0]}–${xhs.metrics.lines[1]} 行，≤ ${xhs.metrics.lineChars} 字）、grid（${xhs.grid.lines[0]}–${xhs.grid.lines[1]} 行，≤ ${xhs.grid.lineChars} 字）、list（${xhs.list.lines[0]}–${xhs.list.lines[1]} 行，≤ ${xhs.list.lineChars} 字）均需填写 heading；quote（${xhs.quote.lines[0]}–${xhs.quote.lines[1]} 行，≤ ${xhs.quote.lineChars} 字，优先原句）的 heading 可选。`,
     `- 最后 1 页可使用 end（不能放中间，不能空白）：lines ${xhs.end.lines[0]}–${xhs.end.lines[1]} 行，每行 ≤ ${xhs.end.lineChars} 字。`,
     '- 若输入携带 images，可挑选最匹配的 url 填入对应卡片的 imageUrl（不要编造 URL）。',
+    '- 若 user payload 携带 referenceImageIds，必须同时输出 referencePlan：images 记录每张有效图片的 id、role（cover | content | style）与简短 reason；sharedImageIds 最多 1 个且只能是 style；pages 只列出有专属参考图的页面，每页去重后最多 2 个 ID。',
+    '- cover 图只能分配给第 1 页，content 图不能分配给封面；参考图可跨页复用，未分配页面自由设计，不要求每张图都使用。不得编造 referenceImageIds 之外的图片 ID。',
+    '- referencePlan 只写 ID、角色、理由和页码，不得写入 Base64、Data URL 或其他图片数据。',
     '- 本阶段请返回 <xhs-meta>...</xhs-meta>（严格合法 JSON，cards 中不要塞入 html 字段，下一步会分批精绘每页自由 HTML）以及可选的 <xhs-style>...</xhs-style>（整套补充 CSS，≤ 4000 字符，所有主色必须使用 var(--xhs-*) 变量）。',
     '输出格式示例：',
-    '<xhs-meta>{"deckStyle":"tech","tweaks":{"preset":"claude"},"title":"","body":"","tags":[""],"cards":[{"kind":"cover","layoutArchetype":"editorial-hero-window","badge":"","heading":"","accent":"","lines":[""],"callout":"","tags":[""],"imageUrl":"","source":["来源段落id"]}]}</xhs-meta>',
+    '<xhs-meta>{"deckStyle":"tech","tweaks":{"preset":"claude"},"title":"","body":"","tags":[""],"cards":[{"kind":"cover","layoutArchetype":"editorial-hero-window","badge":"","heading":"","accent":"","lines":[""],"callout":"","tags":[""],"imageUrl":"","source":["来源段落id"]}],"referencePlan":{"images":[{"id":"ref-1","role":"cover","reason":"巨型标题和主视觉窗口，适合封面"},{"id":"ref-2","role":"content","reason":"三阶段时间轴，适合步骤页"},{"id":"ref-3","role":"style","reason":"暖色便签和细线网格，可统一整套气质"}],"sharedImageIds":["ref-3"],"pages":[{"page":1,"imageIds":["ref-1"]},{"page":3,"imageIds":["ref-2"]},{"page":5,"imageIds":["ref-2"]}]}}</xhs-meta>',
     '<xhs-style>.xhs-artboard .story-kicker { color: var(--xhs-accent); font-weight: 800; }</xhs-style>',
   ].join('\n')
 }
@@ -149,7 +152,7 @@ export function buildDerivePrompt({ article, platform, variant = 'jike', blocks 
     ? String(designPrompt ?? '').trim().slice(0, DERIVE_LIMITS.xhs.designPrompt)
     : ''
   const cleanRefImages = platform === 'xhs'
-    ? sanitizeReferenceImages(referenceImages, { maxCount: 3 })
+    ? sanitizeReferenceImages(referenceImages, { maxCount: DERIVE_LIMITS.xhs.referenceImages })
     : []
   const systemParts = [
     String(skill ?? '').trim(),
@@ -160,7 +163,8 @@ export function buildDerivePrompt({ article, platform, variant = 'jike', blocks 
     cleanRefImages.length
       ? [
         '# 视觉参考图（高优先级模仿指令）',
-        `本次随消息附带了 ${cleanRefImages.length} 张用户上传的视觉参考图。请仔细拆解参考图的构图比例、排版节奏、字体层级、装饰组件（边框/胶囊/便签/印章/表格/箭头等）和设计质感，用 HTML/CSS 还原同级别的视觉风格。`,
+        `本次随消息附带了 ${cleanRefImages.length} 张用户上传的视觉参考图，每张图片前的文本块标注了稳定 ID。请仔细拆解参考图的构图比例、排版节奏、字体层级、装饰组件（边框/胶囊/便签/印章/表格/箭头等）和设计质感，用 HTML/CSS 还原同级别的视觉风格。`,
+        '- 根据视觉特征将图片识别为 cover、content 或 style，并按内容语义分配到页面；内容参考图可以跨页复用，未匹配页面不分配并自由设计，不要求每张图都使用。',
         '- 严禁照抄参考图中的任何文字、品牌名或数字，所有内容事实必须 100% 来自母稿 blocks。',
         '- 主品牌色与表面色仍需映射到 var(--xhs-accent)、var(--xhs-tint)、var(--xhs-bg)、var(--xhs-card)、var(--xhs-dark)、var(--xhs-ink) 变量，保持配色主题随时可一键切换。',
       ].join('\n')
@@ -182,7 +186,10 @@ export function buildDerivePrompt({ article, platform, variant = 'jike', blocks 
     platform,
     ...(platform === 'thread' ? { variant } : {}),
     ...(cleanDesignPrompt ? { designPrompt: cleanDesignPrompt } : {}),
-    ...(cleanRefImages.length ? { referenceImageCount: cleanRefImages.length } : {}),
+    ...(cleanRefImages.length ? {
+      referenceImageCount: cleanRefImages.length,
+      referenceImageIds: cleanRefImages.map((_, index) => `ref-${index + 1}`),
+    } : {}),
     ...(images.length ? { images } : {}),
     blocks: trimmedBlocks,
   }
@@ -715,6 +722,10 @@ export async function generateDerivative(ctx, store, {
 
   onProgress?.({ stage: 'planning', totalCards: 0, completedCards: [], activeCardIndex: 0, message: '正在策划整套小红书笔记文案与每页版式蓝图…' })
   const prepared = await prepareDerivePrompt(article, { platform, variant, designPrompt, referenceImages, root: dataDir })
+  const stage1ReferenceImages = prepared.referenceImages.map((dataUrl, index) => ({
+    id: `ref-${index + 1}`,
+    dataUrl,
+  }))
   let visionFallbackNote = ''
   const onImageFallback = reason => {
     if (!visionFallbackNote && reason) visionFallbackNote = String(reason)
@@ -738,6 +749,7 @@ export async function generateDerivative(ctx, store, {
         sourceText: prepared.sourceText,
         status: 502,
         strictCardLength,
+        referenceImageIds: stage1ReferenceImages.map(image => image.id),
       })
   )
 
@@ -762,7 +774,7 @@ export async function generateDerivative(ctx, store, {
     const raw = await callModel(ctx, {
       system: prepared.system,
       user: userMessage,
-      images: platform === 'xhs' ? prepared.referenceImages : [],
+      images: platform === 'xhs' ? stage1ReferenceImages : [],
       onImageFallback,
       task: `derive-${platform}`,
       maxTokens: platform === 'xhs' ? 6144 : 8192,

@@ -13,6 +13,8 @@ description: Claude Design / OpenDesign 风格的小红书首席视觉设计师�
 4. **尊重用户设计想法与参考图**：
    - 如果输入 JSON 中带有 `designPrompt`，优先落实用户的审美偏好、视觉风格、排版节奏或局部想法；
    - 如果随消息附带了**视觉参考图**，请仔细观察参考图的构图骨架、版面留白比例、字号层级、装饰元素（边框/胶囊/便签/印章/箭头/表格/终端窗等）和整体氛围，用你的 HTML/CSS 深度还原同级别的视觉设计感——**严禁照抄参考图里的文字或数据**（所有事实与文案 100% 来自母稿 `blocks`），且主品牌色仍需映射到 `var(--xhs-*)` 变量以支持随时换肤；
+   - 每张上传参考图前都有 `[参考图 ref-N]` 稳定 ID。阶段 1 必须根据视觉特征在 `referencePlan.images` 中标记 `cover | content | style` 角色并给出简短理由，再按内容语义写入 `pages`；`sharedImageIds` 最多 1 个且只能是 `style`，每页最多 2 个专属 ID。封面图只能用于第 1 页，内容图不能用于封面；
+   - 参考图可以跨页复用，未分配页面直接自由设计，不要求每张图都使用，也不要求用户补图或手动映射。`referencePlan` 只保存 ID、角色、理由和页码，不得写入 Base64 或 URL；
    - 如果未提供设计想法与参考图，由你根据文章内容自主构思最契合的视觉方向（如：编辑部杂志画报、工业工具说明书、工程架构看板、红笔批注手账、极简瑞士网格、科技实测报告、复古报纸/海报等）。
 
 ## 2. 色彩正交铁律（保证「配色主题」随时一键换肤）
@@ -78,7 +80,20 @@ description: Claude Design / OpenDesign 风格的小红书首席视觉设计师�
       "imageUrl": "可选母稿配图URL",
       "source": ["b_1"]
     }
-  ]
+  ],
+  "referencePlan": {
+    "images": [
+      { "id": "ref-1", "role": "cover", "reason": "巨型标题和主视觉窗口，适合封面" },
+      { "id": "ref-2", "role": "content", "reason": "三阶段时间轴，适合步骤页" },
+      { "id": "ref-3", "role": "style", "reason": "暖色便签和细线网格，可统一整套气质" }
+    ],
+    "sharedImageIds": ["ref-3"],
+    "pages": [
+      { "page": 1, "imageIds": ["ref-1"] },
+      { "page": 3, "imageIds": ["ref-2"] },
+      { "page": 5, "imageIds": ["ref-2"] }
+    ]
+  }
 }
 </xhs-meta>
 <xhs-style>

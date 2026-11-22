@@ -111,6 +111,24 @@ test('buildDerivePrompt 按段过滤 fixedLines 并按需注入个人声音与 3
   const parsedHuge = JSON.parse(truncated.user)
   assert.equal(parsedHuge.blocks.length, 6)
   assert.ok(parsedHuge.blocks.reduce((s, b) => s + b.text.length, 0) <= 30000)
+
+  const referenceImages = Array.from({ length: 12 }, (_, index) => (
+    `data:image/png;base64,${Buffer.from(`reference-${index}`).toString('base64')}`
+  ))
+  const withReferences = buildDerivePrompt({
+    article,
+    platform: 'xhs',
+    blocks,
+    profile: null,
+    skill: '小红书技能',
+    referenceImages,
+  })
+  const referenceUser = JSON.parse(withReferences.user)
+  assert.equal(withReferences.referenceImages.length, 10)
+  assert.deepEqual(referenceUser.referenceImageIds, Array.from({ length: 10 }, (_, index) => `ref-${index + 1}`))
+  assert.match(withReferences.system, /referencePlan/)
+  assert.match(withReferences.system, /复用/)
+  assert.match(withReferences.system, /自由设计/)
 })
 
 test('generateDerivative 正常生成、失败带错误反馈重试一次、两次失败报 502', async () => {
@@ -671,7 +689,15 @@ test('小红书整套生成与单页重设计支持上传参考图，且纯文�
     { "kind": "steps", "layoutArchetype": "steps", "heading": "步骤", "lines": ["一步 | a", "二步 | b", "三步 | c"], "source": ["${b2.id}"] },
     { "kind": "grid", "layoutArchetype": "grid", "heading": "矩阵", "lines": ["模块一 | 稳", "模块二 | 快"], "source": ["${b2.id}"] },
     { "kind": "end", "layoutArchetype": "end", "heading": "收尾", "lines": ["先收藏"], "source": [] }
-  ]
+  ],
+  "referencePlan": {
+    "images": [
+      { "id": "ref-1", "role": "cover", "reason": "大标题封面" },
+      { "id": "ref-2", "role": "style", "reason": "统一细线网格" }
+    ],
+    "sharedImageIds": ["ref-2"],
+    "pages": [{ "page": 1, "imageIds": ["ref-1"] }]
+  }
 }
 </xhs-meta>`
   const batch1 = `
@@ -713,10 +739,21 @@ test('小红书整套生成与单页重设计支持上传参考图，且纯文�
   const rec = await generateDerivative(vision.ctx, store, {
     id: article.id,
     platform: 'xhs',
-    referenceImages: [tinyPng],
+    referenceImages: [tinyPng, tinyPng],
   })
   assert.equal(vision.captured.length, 3)
   assert.ok(vision.captured.every(call => call.content.some(p => p.type === 'image' && p.mediaType === 'image/png')))
+  assert.equal(vision.captured[0].content[1].text, '[参考图 ref-1]')
+  assert.equal(vision.captured[0].content[3].text, '[参考图 ref-2]')
+  assert.deepEqual(rec.payload.referencePlan, {
+    images: [
+      { id: 'ref-1', role: 'cover', reason: '大标题封面' },
+      { id: 'ref-2', role: 'style', reason: '统一细线网格' },
+    ],
+    sharedImageIds: ['ref-2'],
+    pages: [{ page: 1, imageIds: ['ref-1'] }],
+  })
+  assert.equal(JSON.stringify(rec.payload).includes('data:image'), false)
   assert.match(vision.captured[0].system, /视觉参考图/)
   assert.match(vision.captured[1].system, /视觉参考图/)
   assert.ok(!rec.warnings.some(w => /不支持识图/.test(w)))
