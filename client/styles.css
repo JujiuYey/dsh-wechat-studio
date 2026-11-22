@@ -1371,3 +1371,6 @@ button.ws-preflight-item:hover { background: var(--hover); border-color: var(--a
 .ws-derive-tag { display: inline-flex; align-items: center; gap: 4px; padding: 3px 9px; border-radius: 999px; border: 1px solid var(--line); background: var(--panel); font-size: 12px; }
 .ws-derive-tag button { color: var(--ink2); font-size: 14px; line-height: 1; padding: 0 2px; }
 .ws-derive-tag button:hover { color: var(--bad); }
+.ws-derive-dirty-tag { margin-left: 6px; padding: 1px 6px; border-radius: 999px; background: color-mix(in srgb, var(--update) 18%, var(--card)); color: var(--update); font-size: 11px; font-weight: 600; }
+.ws-derive-tab-dot { display: inline-block; width: 6px; height: 6px; margin-left: 6px; border-radius: 50%; background: var(--update); vertical-align: middle; }
+.ws-derive-thumb-fail { color: var(--bad); font-size: 12px; font-weight: 600; }

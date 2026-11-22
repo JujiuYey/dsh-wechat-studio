@@ -12,6 +12,7 @@ import { COVER_STYLES } from '../src/cover-styles.js'
 import React from 'react'
 import { cardMarkdown, emphasisFormats, formatSelection, insertFormats } from './editor-format.js'
 import { act, copyDetectionText, copyMarkdown, copyText, countCurrentParagraphDrafts, getState, loadLayout, loadModels, loadRevisions, loadSettings, loadSkills, loadStyleProfile, loadVersion, openStyleWizard, previewMarkdownReimport, reimportMarkdown, rememberArticleView, saveSettings, setState, testWechat, testZhuque, toast, uploadImage, uploadPortrait, uploadReport, useStudio } from './state.js'
+import { hasUnsavedDeriveDrafts } from './derive-draft-model.js'
 import { DeriveView } from './derive.jsx'
 import { isDraftReady, readMinutes, summarizeDraftHome } from './draft-home-model.js'
 import { FeedCardPreview } from './feed-preview.jsx'
@@ -2153,6 +2154,7 @@ function RevisionDialog({ article, blockId }) {
 function PaperModule({ data }) {
   const view = useStudio(s => s.view)
   const chatOpen = useStudio(s => s.chatOpen)
+  const deriveDrafts = useStudio(s => s.deriveDrafts)
   useStudio(s => s.draftVersion)
   const [review, setReview] = React.useState(null)
   const [side, setSide] = React.useState(null)
@@ -2186,7 +2188,7 @@ function PaperModule({ data }) {
         <div className="ws-tabs" role="tablist" aria-label="视图">
           <button type="button" role="tab" aria-selected={view === 'paper'} className={view === 'paper' ? 'is-on' : ''} onClick={() => openArticleView(article, 'paper')}>稿面</button>
           <button type="button" role="tab" aria-selected={view === 'layout'} className={view === 'layout' ? 'is-on' : ''} onClick={() => openArticleView(article, 'layout')}>排版预览</button>
-          <button type="button" role="tab" aria-selected={view === 'derive'} className={view === 'derive' ? 'is-on' : ''} onClick={() => setState({ view: 'derive', editing: null })}>一稿多发</button>
+          <button type="button" role="tab" aria-selected={view === 'derive'} className={view === 'derive' ? 'is-on' : ''} onClick={() => setState({ view: 'derive', editing: null })}>一稿多发{hasUnsavedDeriveDrafts(article.id, deriveDrafts) ? <i className="ws-derive-tab-dot" aria-label="有未保存修改" /> : null}</button>
         </div>
         {article.canUndo ? <button type="button" className="ws-btn" disabled={Boolean(article.job)} onClick={() => setState({ dialog: 'revisions' })}>改稿对比</button> : null}
         {article.canUndo ? <button type="button" className="ws-icon-btn" aria-label="撤销上一步" title="撤销上一步" disabled={Boolean(article.job)} onClick={() => act('undo')}><Icon name="undo" /></button> : null}

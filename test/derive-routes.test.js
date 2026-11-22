@@ -185,3 +185,20 @@ test('derive/generate 并发互斥锁与归档稿件拒绝', async () => {
   const archivedGen = await request('derive/generate', { id: article.id, platform: 'thread', variant: 'jike' })
   assert.equal(archivedGen.status, 409)
 })
+
+test('state 透出 fixedLines 并在 settings 更新后同步反映到 Markdown 导出', async () => {
+  const { article, request } = await setup()
+  const initialState = await request('state')
+  assert.equal(initialState.status, 200)
+  assert.deepEqual(initialState.body.fixedLines, ['设为「星标」'])
+
+  const updSettings = await request('settings', { fixedLines: ['设为「星标」', '第二段讲核心步骤。'] })
+  assert.equal(updSettings.status, 200)
+
+  const nextState = await request('state')
+  assert.deepEqual(nextState.body.fixedLines, ['设为「星标」', '第二段讲核心步骤。'])
+
+  const exported = await request(`derive/markdown?id=${article.id}&target=blog`)
+  assert.equal(exported.status, 200)
+  assert.ok(!exported.body.markdown.includes('第二段讲核心步骤'))
+})

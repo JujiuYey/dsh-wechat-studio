@@ -426,6 +426,7 @@ async function snapshotState(ctx, store, pipeline) {
   return {
     brand: settings.brand,
     mp: { name: settings.mp?.name ?? '', headImg: settings.mp?.headImg ?? '' },
+    fixedLines: settings.fixedLines,
     zhuqueReady: Boolean(settings.zhuqueKey),
     cloudinaryReady: Boolean(settings.cloudinary?.cloudName && settings.cloudinary?.apiKey && settings.cloudinary?.apiSecret),
     hasPersonalStyle: styleState.active,

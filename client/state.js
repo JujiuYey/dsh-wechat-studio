@@ -1,6 +1,7 @@
 // 浏览器侧的状态：Host 状态的本地镜像，加上只属于界面的视图、弹窗等。
 import React from 'react'
 import { isNewerRelease } from '../src/version.js'
+import { deriveDraftKey } from './derive-draft-model.js'
 
 const BASE = 'wechat-studio/'
 
@@ -8,7 +9,7 @@ export function countCurrentParagraphDrafts(blocks, drafts) {
   return blocks.filter(block => drafts.has(block.id)).length
 }
 
-let snap = { data: null, error: null, view: 'paper', paperHome: true, dialog: null, toast: null, editing: null, layout: null, pending: null, chatOpen: true, bannerTried: {}, module: 'paper', skills: null, style: null, styleWizardStep: 1, styleWizardReturnTo: null, newDialogDraft: null, settings: null, update: null, insights: null, insightsRange: 'all', insightsError: null, insightsRulePreview: null, svgCardCandidate: null }
+let snap = { data: null, error: null, view: 'paper', paperHome: true, dialog: null, toast: null, editing: null, layout: null, deriveDrafts: {}, pending: null, chatOpen: true, bannerTried: {}, module: 'paper', skills: null, style: null, styleWizardStep: 1, styleWizardReturnTo: null, newDialogDraft: null, settings: null, update: null, insights: null, insightsRange: 'all', insightsError: null, insightsRulePreview: null, svgCardCandidate: null }
 const listeners = new Set()
 let timer = null
 
@@ -58,11 +59,25 @@ export function loadRevisions(id, signal) {
   return request(`revisions?${new URLSearchParams({ id })}`, { signal })
 }
 
+function pruneDeriveDrafts(drafts, articles) {
+  if (!drafts || !Object.keys(drafts).length) return drafts
+  const alive = new Set((articles ?? []).map(a => a.id))
+  let changed = false
+  const next = {}
+  for (const [key, entry] of Object.entries(drafts)) {
+    const articleId = key.split(':')[0]
+    if (alive.has(articleId)) next[key] = entry
+    else changed = true
+  }
+  return changed ? next : drafts
+}
+
 function accept(data) {
   const current = data.current
   // 正文变了，之前排好的版式就过期了
   const layout = snap.layout?.key === bodyKey(current, data.brand) ? snap.layout : null
-  setState({ data, error: null, layout })
+  const deriveDrafts = pruneDeriveDrafts(snap.deriveDrafts, data.articles)
+  setState({ data, error: null, layout, deriveDrafts })
   clearTimeout(timer)
   if (current?.job || current?.coverJob || current?.inlineDiagramJob || current?.imageImport?.total) timer = setTimeout(refresh, 900)
 }
@@ -215,15 +230,48 @@ export function loadPortableMarkdown(id, target = 'blog', signal) {
   return request(`derive/markdown?${new URLSearchParams({ id, target })}`, signal ? { signal } : undefined)
 }
 
+export function setDeriveDraft(articleId, platform, entry) {
+  if (!articleId || !platform) return
+  const key = deriveDraftKey(articleId, platform)
+  setState(s => ({
+    deriveDrafts: { ...s.deriveDrafts, [key]: entry },
+  }))
+}
+
+export function clearDeriveDraft(articleId, platform) {
+  if (!articleId || !platform) return
+  const key = deriveDraftKey(articleId, platform)
+  setState(s => {
+    if (!Object.hasOwn(s.deriveDrafts, key)) return s
+    const next = { ...s.deriveDrafts }
+    delete next[key]
+    return { deriveDrafts: next }
+  })
+}
+
+export function clearArticleDeriveDrafts(articleId) {
+  if (!articleId) return
+  const prefix = `${articleId}:`
+  setState(s => {
+    const keys = Object.keys(s.deriveDrafts).filter(k => k.startsWith(prefix))
+    if (!keys.length) return s
+    const next = { ...s.deriveDrafts }
+    for (const k of keys) delete next[k]
+    return { deriveDrafts: next }
+  })
+}
+
 export async function generateDerivative({ id, platform, variant, confirmOverwrite = false }) {
+  const targetId = id ?? snap.data?.current?.id
   setState({ pending: `derive/${platform}` })
   try {
     const data = await postJson('derive/generate', {
-      id: id ?? snap.data?.current?.id,
+      id: targetId,
       platform,
       variant,
       confirmOverwrite,
     })
+    clearDeriveDraft(targetId, platform)
     accept(data)
     return { ok: true }
   } catch (err) {
@@ -237,12 +285,18 @@ export async function generateDerivative({ id, platform, variant, confirmOverwri
   }
 }
 
-export function saveDerivative({ id, platform, payload }) {
-  return act('derive/update', { id, platform, payload })
+export async function saveDerivative({ id, platform, payload }) {
+  const targetId = id ?? snap.data?.current?.id
+  const ok = await act('derive/update', { id: targetId, platform, payload })
+  if (ok) clearDeriveDraft(targetId, platform)
+  return ok
 }
 
-export function deleteDerivative({ id, platform }) {
-  return act('derive/delete', { id, platform })
+export async function deleteDerivative({ id, platform }) {
+  const targetId = id ?? snap.data?.current?.id
+  const ok = await act('derive/delete', { id: targetId, platform })
+  if (ok) clearDeriveDraft(targetId, platform)
+  return ok
 }
 
 export function downloadBlob(blob, filename) {
