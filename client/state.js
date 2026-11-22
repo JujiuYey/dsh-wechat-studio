@@ -1,7 +1,7 @@
 // 浏览器侧的状态：Host 状态的本地镜像，加上只属于界面的视图、弹窗等。
 import React from 'react'
 import { isNewerRelease } from '../src/version.js'
-import { deriveDraftKey } from './derive-draft-model.js'
+import { deriveDraftKey, mergeRedesignedXhsCardDraft, xhsCardDraftSignature } from './derive-draft-model.js'
 
 const BASE = 'wechat-studio/'
 
@@ -73,13 +73,20 @@ function pruneDeriveDrafts(drafts, articles) {
 }
 
 function accept(data) {
+  const prevCurrent = snap.data?.current
   const current = data.current
   // 正文变了，之前排好的版式就过期了
   const layout = snap.layout?.key === bodyKey(current, data.brand) ? snap.layout : null
   const deriveDrafts = pruneDeriveDrafts(snap.deriveDrafts, data.articles)
   setState({ data, error: null, layout, deriveDrafts })
+  if (prevCurrent && current && prevCurrent.id === current.id && prevCurrent.xhsJob && !current.xhsJob) {
+    if (current.xhsError) toast(current.xhsError, true)
+    else if (current.derivatives?.some(d => d.platform === 'xhs')) toast('小红书卡片已全部精绘完成')
+  }
   clearTimeout(timer)
-  if (current?.job || current?.coverJob || current?.inlineDiagramJob || current?.imageImport?.total) timer = setTimeout(refresh, 900)
+  if (current?.job || current?.coverJob || current?.inlineDiagramJob || current?.xhsJob || current?.imageImport?.total) {
+    timer = setTimeout(refresh, current?.xhsJob ? 650 : 900)
+  }
 }
 
 export function previewMarkdownReimport(body) {
@@ -261,14 +268,29 @@ export function clearArticleDeriveDrafts(articleId) {
   })
 }
 
-export async function generateDerivative({ id, platform, variant, confirmOverwrite = false }) {
+export async function generateDerivative({
+  id,
+  platform,
+  variant,
+  designPrompt = '',
+  referenceImages = [],
+  confirmOverwrite = false,
+}) {
   const targetId = id ?? snap.data?.current?.id
   setState({ pending: `derive/${platform}` })
   try {
+    const cleanRefs = Array.isArray(referenceImages) ? referenceImages.filter(Boolean).slice(0, 3) : []
     const data = await postJson('derive/generate', {
       id: targetId,
       platform,
       variant,
+      ...(platform === 'xhs'
+        ? {
+          designPrompt: String(designPrompt ?? ''),
+          ...(cleanRefs.length ? { referenceImages: cleanRefs } : {}),
+          async: true,
+        }
+        : {}),
       confirmOverwrite,
     })
     clearDeriveDraft(targetId, platform)
@@ -277,6 +299,57 @@ export async function generateDerivative({ id, platform, variant, confirmOverwri
   } catch (err) {
     if (err.status === 409 && err.code === 'edited') {
       return { ok: false, needsConfirm: true }
+    }
+    toast(err.message, true)
+    return { ok: false }
+  } finally {
+    setState({ pending: null })
+  }
+}
+
+export async function redesignXhsCard({
+  id,
+  cardIndex,
+  cardPrompt = '',
+  referenceImages = [],
+  baseCardHash = '',
+  expectedDraftCardHash = '',
+}) {
+  const targetId = id ?? snap.data?.current?.id
+  const key = deriveDraftKey(targetId, 'xhs')
+  const startDraftCard = snap.deriveDrafts?.[key]?.payload?.cards?.[cardIndex] ?? null
+  const capturedDraftHash = expectedDraftCardHash || xhsCardDraftSignature(startDraftCard)
+  const cleanRefs = Array.isArray(referenceImages) ? referenceImages.filter(Boolean).slice(0, 2) : []
+  setState({ pending: `derive/xhs/card/${cardIndex}` })
+  try {
+    const data = await postJson('derive/redesign-card', {
+      id: targetId,
+      cardIndex,
+      cardPrompt: String(cardPrompt ?? ''),
+      ...(cleanRefs.length ? { referenceImages: cleanRefs } : {}),
+      baseCardHash: String(baseCardHash ?? ''),
+    })
+    const serverRecord = data.current?.derivatives?.find(item => item.platform === 'xhs') ?? null
+    const existingDraft = snap.deriveDrafts?.[key]
+    accept(data)
+    const merged = mergeRedesignedXhsCardDraft({
+      existingDraft,
+      serverRecord,
+      cardIndex,
+      expectedDraftCardHash: capturedDraftHash,
+    })
+    if (merged.status === 'merged' && merged.nextDraft) {
+      setDeriveDraft(targetId, 'xhs', merged.nextDraft)
+    }
+    return {
+      ok: true,
+      card: merged.serverCard,
+      localChanged: merged.status === 'local-changed',
+    }
+  } catch (err) {
+    if (err.status === 409 && err.code === 'card_conflict') {
+      toast(err.message || '该页卡片在重设计期间已有变动，请刷新后重试。', true)
+      return { ok: false, conflict: true }
     }
     toast(err.message, true)
     return { ok: false }

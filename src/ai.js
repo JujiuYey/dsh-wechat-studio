@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto'
 import { readFile, stat } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { extractBalancedJsonSlice, parseDataImageUri, repairLooseJson } from './derive-shared.js'
 
 const BUNDLED = join(dirname(fileURLToPath(import.meta.url)), '..', 'skills')
 const SESSION_ID = `dsh-wechat-studio-${randomUUID()}`
@@ -89,6 +90,18 @@ export function modelInfo(ctx) {
   return override ?? defaultSelection(ctx)
 }
 
+function extractModelModalities(model) {
+  if (!model || typeof model !== 'object') return null
+  const list = Array.isArray(model.inputModalities)
+    ? model.inputModalities
+    : Array.isArray(model.input)
+      ? model.input
+      : Array.isArray(model.modalities)
+        ? model.modalities
+        : null
+  return list ? list.map(v => String(v).toLowerCase()) : null
+}
+
 /**
  * 列出 DSH 里已接入的提供方和它们公布的模型，给模型选择器用。某个提供方读失败就跳过，不影响其他的。
  * @param {object} ctx - Cordis 上下文。
@@ -98,28 +111,76 @@ export async function listModels(ctx) {
   const providers = llm ? await llm.listProviders() : []
   const settled = await Promise.allSettled(providers.map(async p => ({
     provider: p.id, name: p.name || p.id,
-    models: (await llm.listModels(p.id)).map(m => ({ id: m.id, name: m.name || m.id })),
+    models: (await llm.listModels(p.id)).map(m => {
+      const modalities = extractModelModalities(m)
+      return {
+        id: m.id,
+        name: m.name || m.id,
+        ...(modalities ? { inputModalities: modalities, supportsImages: modalities.includes('image') } : {}),
+      }
+    }),
   })))
   return settled.filter(r => r.status === 'fulfilled').map(r => r.value).filter(p => p.models.length)
 }
 
+/** 查询当前激活模型是否声明支持识图：true 支持 / false 明确不支持 / null 未声明（运行时自适应）。 */
+export async function modelVisionSupport(ctx) {
+  const info = modelInfo(ctx)
+  if (!info) return null
+  const llm = ctx.get('llm')
+  if (typeof llm?.listModels !== 'function') return null
+  try {
+    const models = await llm.listModels(info.provider)
+    const hit = (Array.isArray(models) ? models : []).find(m => m?.id === info.model)
+    const modalities = extractModelModalities(hit)
+    if (!modalities) return null
+    return modalities.includes('image')
+  } catch {
+    return null
+  }
+}
+
+function isImageUnsupportedError(err) {
+  const msg = String(err?.message ?? err ?? '')
+  return /unsupported_content|does_not_support_images|does not support image|inputmodalit|image.*not.*support|vision.*not.*support|multimodal.*not.*support|unknown content type.*image|不支持.*图|不支持识图|不支持视觉/i.test(msg)
+}
+
+function buildUserContent(user, images) {
+  const parts = [{ type: 'text', text: user }]
+  for (const dataUrl of Array.isArray(images) ? images : []) {
+    const parsed = parseDataImageUri(dataUrl)
+    if (!parsed) continue
+    parts.push({
+      type: 'image',
+      mediaType: parsed.mediaType,
+      mimeType: parsed.mediaType,
+      data: parsed.data,
+    })
+  }
+  return parts
+}
+
 /**
  * 调一次模型并流式回传文本。插件在会话之外调模型，所以自己带一个会话标识。
+ * 支持可选传入 images（data:image/...;base64,...）：若当前模型不支持识图，自动优雅降级为纯文本重试并触发 onImageFallback。
  * @param {object} ctx - Cordis 上下文。
- * @param {{system: string, user: string, task: string, maxTokens?: number, signal?: AbortSignal, onText?: (delta: string) => void}} request - 请求。
+ * @param {{system: string, user: string, images?: string[], task: string, maxTokens?: number, signal?: AbortSignal, onText?: (delta: string) => void, onImageFallback?: (reason: string) => void}} request - 请求。
  * @returns {Promise<string>} 完整文本。
  */
-export async function callModel(ctx, { system, user, task, maxTokens = 8000, signal, onText }) {
+export async function callModel(ctx, { system, user, images = [], task, maxTokens = 8000, signal, onText, onImageFallback }) {
   const info = modelInfo(ctx)
   if (!info) throw new Error('当前没有可用模型，请先在 DeepSeek Harness 里配置好模型')
   const llm = ctx.get('llm')
-  try {
+  const validImages = (Array.isArray(images) ? images : []).filter(url => Boolean(parseDataImageUri(url)))
+
+  const runOnce = async useImages => {
     const call = await llm.prepareCall({ provider: info.provider, model: info.model, maxTokens }, signal, controls => controls)
     let text = ''
+    const content = buildUserContent(user, useImages ? validImages : [])
     for await (const chunk of call.stream({
       ...call.config,
       system,
-      messages: [{ role: 'user', content: [{ type: 'text', text: user }], source: { kind: 'dsh-wechat-studio', task } }],
+      messages: [{ role: 'user', content, source: { kind: 'dsh-wechat-studio', task } }],
       sessionId: SESSION_ID,
       signal,
     })) {
@@ -128,6 +189,29 @@ export async function callModel(ctx, { system, user, task, maxTokens = 8000, sig
         onText?.(chunk.text)
       } else if (chunk.type === 'finish' && ['error', 'aborted'].includes(chunk.reason?.kind)) {
         throw new Error(chunk.reason.failure?.message || '模型调用失败')
+      }
+    }
+    return text
+  }
+
+  try {
+    let shouldSendImages = validImages.length > 0
+    if (shouldSendImages) {
+      const vision = await modelVisionSupport(ctx)
+      if (vision === false) {
+        shouldSendImages = false
+        onImageFallback?.('当前所选模型未声明支持识图，已自动降级为纯文字设计（如需模仿参考图风格，请切换支持视觉的多模态模型）。')
+      }
+    }
+    let text
+    try {
+      text = await runOnce(shouldSendImages)
+    } catch (err) {
+      if (shouldSendImages && isImageUnsupportedError(err)) {
+        onImageFallback?.('当前模型暂不支持图片输入，已自动忽略参考图并按文字继续生成（切换支持识图的模型即可参考配图风格）。')
+        text = await runOnce(false)
+      } else {
+        throw err
       }
     }
     modelStatus.ok = true
@@ -140,22 +224,36 @@ export async function callModel(ctx, { system, user, task, maxTokens = 8000, sig
   }
 }
 
-/** 从模型输出里取出 JSON，容忍外面包了代码块或前后有说明文字。 */
+/** 从模型输出里取出 JSON，容忍外面包了代码块、思考标签、尾随逗号、字符串内裸换行或紧随其后的 CSS 块。 */
 export function extractJson(text) {
   const source = String(text ?? '')
-  const fenced = /```(?:json)?\s*([\s\S]*?)```/.exec(source)
+    .replace(/<think\b[^>]*>[\s\S]*?<\/think>/gi, '')
+    .replace(/<xhs[-_](?:style|page[-_]style)\b[^>]*>[\s\S]*?(?:<\/xhs[-_](?:style|page[-_]style)>|$)/gi, '')
+    .trim()
+  const fenced = /```(?:json)?\s*([\s\S]*?)\s*```/i.exec(source)
   const candidates = [fenced?.[1], source]
   for (const candidate of candidates) {
     if (!candidate) continue
+    const balanced = extractBalancedJsonSlice(candidate)
     const start = candidate.search(/[{[]/)
-    if (start === -1) continue
-    const open = candidate[start]
-    const end = candidate.lastIndexOf(open === '{' ? '}' : ']')
-    if (end <= start) continue
-    try {
-      return JSON.parse(candidate.slice(start, end + 1))
-    } catch {
-      // 换下一个候选
+    const lastSlice = start === -1
+      ? ''
+      : (() => {
+        const open = candidate[start]
+        const end = candidate.lastIndexOf(open === '{' ? '}' : ']')
+        return end > start ? candidate.slice(start, end + 1) : ''
+      })()
+    for (const slice of [balanced, lastSlice]) {
+      if (!slice) continue
+      try {
+        return JSON.parse(slice)
+      } catch {
+        try {
+          return JSON.parse(repairLooseJson(slice))
+        } catch {
+          // 换下一个候选
+        }
+      }
     }
   }
   return null

@@ -3,7 +3,7 @@ import { COVER_RESOLUTIONS, COVER_FORMATS, MAX_COVER_COUNT, providerFormats } fr
 // dsh-wechat-studio host 半片：/wechat-studio/* 接口。
 import { join } from 'node:path'
 import { readFile } from 'node:fs/promises'
-import { defaultSelection, listModels, modelInfo, modelOverride, modelStatus, setModelOverride, skillSources } from './ai.js'
+import { defaultSelection, listModels, modelInfo, modelOverride, modelStatus, modelVisionSupport, setModelOverride, skillSources } from './ai.js'
 import { BANNER_CHOICES, BANNER_STYLES, DEFAULT_BANNER } from './banner.js'
 import { blockKind, clearSchedule, correctPublishedAt, createArticle, fixPlan, HOOK_IDS, isCheckable, listMeta, markPublished, newId, revisionChanges, setSchedule, snapshot, splitMarkdown, toMarkdown, touch, undo, unpublish } from './article.js'
 import { MAX_LOCAL_IMAGE, transferFeishuImages, uploadInlineImage, uploadLocalImage } from './cloudinary.js'
@@ -11,7 +11,7 @@ import { feishuImageUrls, replaceFeishuImages } from './markdown-images.js'
 import { applyMarkdownReimport, planMarkdownReimport } from './markdown-reimport.js'
 import { generateInlineImage, readInlineAsset, readInlineImage, removeInlineImages, removeOrphanInlineImages, saveInlineImage } from './inline-assets.js'
 import { THEMES as THEME_COLORS } from '../vendor/layout/layout.js'
-import { deleteDerivative, derivativesView, generateDerivative, updateDerivative } from './derive.js'
+import { deleteDerivative, derivativesView, extractArticleImages, generateDerivative, redesignXhsCard, updateDerivative } from './derive.js'
 import { toPortableMarkdown } from './derive-markdown.js'
 import { DERIVE_PLATFORMS } from './derive-shared.js'
 import { coverRuns, duplicateArticle } from './duplicate-article.js'
@@ -34,7 +34,7 @@ import { latestCover, pushWechatDraft, verifyCredentials } from './wechat.js'
 import { normalizeStyleProfile } from './writing-style-shared.js'
 import { analyzeWritingStyle, applyWritingStyle, previewWritingStyle, readStyleState, renderHeadlineSkill, renderWriterSkill, restoreDefaultStyle } from './writing-style.js'
 
-const MAX_JSON = 2_000_000
+const MAX_JSON = 4_000_000
 const MAX_PDF = 30_000_000
 const MAX_IMPORT = 10_000_000
 const { version: VERSION } = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'))
@@ -81,10 +81,16 @@ const imageJobs = new WeakMap()
 const coverJobs = new WeakMap()
 const diagramJobs = new WeakMap()
 const deriveJobs = new WeakMap()
+const xhsJobs = new WeakMap()
 
 function deriveJobSet(store) {
   if (!deriveJobs.has(store)) deriveJobs.set(store, new Set())
   return deriveJobs.get(store)
+}
+
+function xhsJobMap(store) {
+  if (!xhsJobs.has(store)) xhsJobs.set(store, new Map())
+  return xhsJobs.get(store)
 }
 
 function coverJobMap(store) {
@@ -382,6 +388,9 @@ function view(article, pipeline, store, inlineStyles = [], inlineStyleWarnings =
     layoutPreferences: article.layoutPreferences ?? null,
     effectiveLayoutPreferences,
     derivatives: derivativesView(article),
+    xhsJob: xhsJobMap(store).get(article.id) ?? null,
+    xhsError: article.xhsError ?? null,
+    articleImages: extractArticleImages(article),
     xhsPalette: {
       main: themeColors.main,
       soft: themeColors.soft,
@@ -418,10 +427,11 @@ async function snapshotState(ctx, store, pipeline) {
   const state = await store.read()
   const current = state.articles.find(a => a.id === state.currentId && !a.archivedAt) ?? null
   const info = modelInfo(ctx)
-  const [settings, inlineCatalog, styleState] = await Promise.all([
+  const [settings, inlineCatalog, styleState, modelSupportsImages] = await Promise.all([
     readSettings(store.root),
     readInlineStyleCatalog(join(store.root, 'skills')),
     readStyleState(store.root),
+    modelVisionSupport(ctx),
   ])
   return {
     brand: settings.brand,
@@ -433,7 +443,7 @@ async function snapshotState(ctx, store, pipeline) {
     personalStyleScopes: styleState.scopes,
     articles: state.articles.map(article => listMeta(article, { bannerReady: bannerView(article).ready })).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
     current: view(current, pipeline, store, inlineCatalog.styles, inlineCatalog.warnings, settings),
-    model: info ? info.model : null, modelPinned: Boolean(modelOverride()), modelOk: modelStatus.ok, modelError: modelStatus.error,
+    model: info ? info.model : null, modelPinned: Boolean(modelOverride()), modelOk: modelStatus.ok, modelError: modelStatus.error, modelSupportsImages,
     storageProblems: store.problems.map(p => p.message),
   }
 }
@@ -1275,19 +1285,100 @@ export async function route(deps, req, res) {
     case 'derive/generate': {
       const state = await store.read()
       const article = mustFind(state, body.id)
+      if (article.archivedAt) return json(res, 409, { error: '归档稿件不能派生，请先恢复。' })
       if (!DERIVE_PLATFORMS.includes(body.platform)) {
         return json(res, 400, { error: `不支持的派生平台：${body.platform}（可选：${DERIVE_PLATFORMS.join('、')}）。` })
+      }
+      if (article.derivatives?.[body.platform]?.editedAt && body.confirmOverwrite !== true) {
+        return json(res, 409, { error: '这份派生稿你手动改过，重新生成会覆盖。', code: 'edited' })
       }
       const jobs = deriveJobSet(store)
       const lockKey = `${article.id}:${body.platform}`
       if (jobs.has(lockKey)) return json(res, 409, { error: '这个平台的派生正在生成，请稍候。' })
+
+      if (body.platform === 'xhs' && body.async === true) {
+        jobs.add(lockKey)
+        const progressMap = xhsJobMap(store)
+        const initialProgress = {
+          stage: 'planning',
+          totalCards: 0,
+          completedCards: [],
+          activeCardIndex: 0,
+          message: '正在策划整套小红书笔记文案与每页版式蓝图…',
+        }
+        progressMap.set(article.id, initialProgress)
+        await store.update(s => {
+          const target = s.articles.find(a => a.id === article.id)
+          if (target) target.xhsError = null
+        })
+        const run = async () => {
+          try {
+            await generateDerivative(ctx, store, {
+              id: article.id,
+              platform: 'xhs',
+              variant: body.variant,
+              designPrompt: typeof body.designPrompt === 'string' ? body.designPrompt : '',
+              referenceImages: Array.isArray(body.referenceImages) ? body.referenceImages : [],
+              confirmOverwrite: body.confirmOverwrite === true,
+              progressive: true,
+              onProgress: progress => {
+                progressMap.set(article.id, progress)
+              },
+            })
+            await store.update(s => {
+              const target = s.articles.find(a => a.id === article.id)
+              if (target) target.xhsError = null
+            })
+          } catch (err) {
+            await store.update(s => {
+              const target = s.articles.find(a => a.id === article.id)
+              if (target) target.xhsError = err.message || '小红书图文生成失败，请重试。'
+            }).catch(() => {})
+          } finally {
+            progressMap.delete(article.id)
+            jobs.delete(lockKey)
+          }
+        }
+        void run()
+        return ok()
+      }
+
       jobs.add(lockKey)
       try {
         await generateDerivative(ctx, store, {
           id: article.id,
           platform: body.platform,
           variant: body.variant,
+          designPrompt: typeof body.designPrompt === 'string' ? body.designPrompt : '',
+          referenceImages: Array.isArray(body.referenceImages) ? body.referenceImages : [],
           confirmOverwrite: body.confirmOverwrite === true,
+        })
+      } catch (err) {
+        if (err.code) return json(res, err.status || 409, { error: err.message, code: err.code })
+        throw err
+      } finally {
+        jobs.delete(lockKey)
+      }
+      return ok()
+    }
+    case 'derive/redesign-card': {
+      const state = await store.read()
+      const article = mustFind(state, body.id)
+      const cardIndex = Number(body.cardIndex)
+      if (!Number.isInteger(cardIndex) || cardIndex < 0) {
+        return json(res, 400, { error: '无效的卡片页码。' })
+      }
+      const jobs = deriveJobSet(store)
+      const lockKey = `${article.id}:xhs`
+      if (jobs.has(lockKey)) return json(res, 409, { error: '小红书卡片正在生成或重设计，请稍候。' })
+      jobs.add(lockKey)
+      try {
+        await redesignXhsCard(ctx, store, {
+          id: article.id,
+          cardIndex,
+          cardPrompt: typeof body.cardPrompt === 'string' ? body.cardPrompt : '',
+          referenceImages: Array.isArray(body.referenceImages) ? body.referenceImages : [],
+          baseCardHash: typeof body.baseCardHash === 'string' ? body.baseCardHash : '',
         })
       } catch (err) {
         if (err.code) return json(res, err.status || 409, { error: err.message, code: err.code })

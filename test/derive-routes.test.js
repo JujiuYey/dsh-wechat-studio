@@ -26,11 +26,17 @@ async function setup() {
     ],
   })
   let beforeStream = null
+  let modalities = ['text', 'image']
+  const seenContents = []
   const llm = {
+    async listModels() {
+      return [{ id: 'm', name: 'M', inputModalities: modalities }]
+    },
     prepareCall() {
       return {
         config: {},
-        async *stream() {
+        async *stream({ messages }) {
+          seenContents.push(messages[0].content)
           if (beforeStream) await beforeStream()
           yield { type: 'text-delta', text: output }
           yield { type: 'finish', reason: { kind: 'stop' } }
@@ -67,6 +73,8 @@ async function setup() {
     store,
     article,
     request,
+    seenContents,
+    setModalities(list) { modalities = list },
     setOutput(value) { output = typeof value === 'string' ? value : JSON.stringify(value) },
     setBeforeStream(fn) { beforeStream = fn },
   }
@@ -201,4 +209,157 @@ test('state 透出 fixedLines 并在 settings 更新后同步反映到 Markdown 
   const exported = await request(`derive/markdown?id=${article.id}&target=blog`)
   assert.equal(exported.status, 200)
   assert.ok(!exported.body.markdown.includes('第二段讲核心步骤'))
+})
+
+test('state view 透出 articleImages 供小红书卡片配图使用', async () => {
+  const { store, article, request } = await setup()
+  await store.update(state => {
+    const target = state.articles.find(a => a.id === article.id)
+    target.blocks.push({
+      id: 'b_img',
+      text: '![架构图](https://cdn.example.com/arch.png)',
+      check: null,
+    })
+  })
+  const res = await request('state')
+  assert.equal(res.status, 200)
+  assert.ok(Array.isArray(res.body.current.articleImages))
+  assert.ok(res.body.current.articleImages.some(i => i.url === 'https://cdn.example.com/arch.png' && i.caption === '架构图'))
+})
+
+test('POST derive/redesign-card 透传 cardPrompt、执行单页并发锁与 baseCardHash 409 校验', async () => {
+  const { article, request, setOutput } = await setup()
+  const [b1, b2] = article.blocks
+
+  setOutput({
+    title: '增长 1200 人实操',
+    body: '这是一段符合一百字要求的测试小红书正文内容，重点记录我们在做公众号拆解和最小可用版本验证时的真实心得体会。'.repeat(2),
+    tags: ['实操复盘', '最小版本', '个人经验'],
+    cards: [
+      { kind: 'cover', heading: '增长 1200 人', lines: ['核心步骤'], source: [b1.id] },
+      { kind: 'compare', heading: '对比页', lines: ['以前 | 手动', '现在 | 自动'], source: [b1.id] },
+      { kind: 'steps', heading: '步骤页', lines: ['第一步 | 跑通', '第二步 | 校验', '第三步 | 导出'], source: [b2.id] },
+      { kind: 'grid', heading: '矩阵页', lines: ['模块一 | 清晰', '模块二 | 稳定'], source: [b2.id] },
+      { kind: 'end', heading: '收尾', lines: ['先收藏'], source: [] },
+    ],
+  })
+  const gen = await request('derive/generate', { id: article.id, platform: 'xhs' })
+  assert.equal(gen.status, 200)
+
+  setOutput('<xhs-page-style page="2">.cmp-box { border: 2px solid var(--xhs-accent); }</xhs-page-style><xhs-card page="2"><div class="cmp-box"><h2>重设计后的对比页</h2></div></xhs-card>')
+  const redesigned = await request('derive/redesign-card', {
+    id: article.id,
+    cardIndex: 1,
+    cardPrompt: '改用杂志双栏卡片风格',
+  })
+  assert.equal(redesigned.status, 200)
+  const xhsRec = redesigned.body.current.derivatives.find(d => d.platform === 'xhs')
+  assert.ok(xhsRec.payload.cards[1].html.includes('cmp-box'))
+  assert.ok(xhsRec.payload.cards[1].pageCss.includes('.xhs-artboard .cmp-box'))
+
+  // 传入不匹配的 baseCardHash -> 409 + code='card_conflict'
+  const conflict = await request('derive/redesign-card', {
+    id: article.id,
+    cardIndex: 1,
+    cardPrompt: '再换风格',
+    baseCardHash: 'stale-hash-0000',
+  })
+  assert.equal(conflict.status, 409)
+  assert.equal(conflict.body.code, 'card_conflict')
+})
+
+test('POST derive/generate 支持小红书 async=true 后台渐进式生成并透出 xhsJob 进度', async () => {
+  const { article, request, setOutput, setBeforeStream } = await setup()
+  const [b1, b2] = article.blocks
+
+  setOutput({
+    title: '异步渐进式小红书',
+    body: '这是一段符合一百字要求的测试小红书正文内容，重点记录我们在做公众号拆解和最小可用版本验证时的真实心得体会。'.repeat(2),
+    tags: ['实操复盘', '最小版本', '个人经验'],
+    cards: [
+      { kind: 'cover', heading: '增长 1200 人', lines: ['核心步骤'], source: [b1.id] },
+      { kind: 'compare', heading: '对比页', lines: ['以前 | 手动', '现在 | 自动'], source: [b1.id] },
+      { kind: 'steps', heading: '步骤页', lines: ['第一步 | 跑通', '第二步 | 校验', '第三步 | 导出'], source: [b2.id] },
+      { kind: 'grid', heading: '矩阵页', lines: ['模块一 | 清晰', '模块二 | 稳定'], source: [b2.id] },
+      { kind: 'end', heading: '收尾', lines: ['先收藏'], source: [] },
+    ],
+  })
+
+  let releaseStream
+  const entered = new Promise(resolve => {
+    setBeforeStream(async () => {
+      resolve()
+      await new Promise(done => { releaseStream = done })
+    })
+  })
+
+  const started = await request('derive/generate', { id: article.id, platform: 'xhs', async: true })
+  assert.equal(started.status, 200)
+  assert.ok(started.body.current.xhsJob, 'async=true 应立刻返回运行中的 xhsJob')
+  assert.equal(started.body.current.xhsJob.stage, 'planning')
+
+  await entered
+  // 进行中重复点击返回 409
+  const dup = await request('derive/generate', { id: article.id, platform: 'xhs', async: true })
+  assert.equal(dup.status, 409)
+
+  releaseStream()
+  // 等待后台任务结束
+  for (let i = 0; i < 40; i++) {
+    const polled = await request('state')
+    if (!polled.body.current.xhsJob) {
+      assert.equal(polled.body.current.xhsError, null)
+      assert.ok(polled.body.current.derivatives.some(d => d.platform === 'xhs'))
+      return
+    }
+    await new Promise(r => setTimeout(r, 30))
+  }
+  assert.fail('xhsJob 未在预期时间内完成')
+})
+
+test('GET state 透出 modelSupportsImages，且 derive/generate 与 derive/redesign-card 透传 referenceImages', async () => {
+  const tinyPng = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=='
+  const { article, request, setOutput, seenContents, setModalities } = await setup()
+  const [b1, b2] = article.blocks
+
+  const st1 = await request('state')
+  assert.equal(st1.status, 200)
+  assert.equal(st1.body.modelSupportsImages, true)
+
+  setModalities(['text'])
+  const st2 = await request('state')
+  assert.equal(st2.status, 200)
+  assert.equal(st2.body.modelSupportsImages, false)
+
+  setModalities(['text', 'image'])
+  setOutput({
+    title: '参考图路由测试',
+    body: '这是一段符合一百字要求的测试小红书正文内容，重点记录我们在做公众号拆解和最小可用版本验证时的真实心得体会。'.repeat(2),
+    tags: ['实操复盘', '最小版本', '个人经验'],
+    cards: [
+      { kind: 'cover', heading: '增长 1200 人', lines: ['核心步骤'], html: '<div class="c1"><h1>封面</h1></div>', source: [b1.id] },
+      { kind: 'compare', heading: '对比页', lines: ['以前 | 手动', '现在 | 自动'], html: '<div class="c2"><h2>对比</h2></div>', source: [b1.id] },
+      { kind: 'steps', heading: '步骤页', lines: ['第一步 | 跑通', '第二步 | 校验', '第三步 | 导出'], html: '<div class="c3"><ol><li>步骤</li></ol></div>', source: [b2.id] },
+      { kind: 'grid', heading: '矩阵页', lines: ['模块一 | 清晰', '模块二 | 稳定'], html: '<div class="c4"><table><tr><td>矩阵</td></tr></table></div>', source: [b2.id] },
+      { kind: 'end', heading: '收尾', lines: ['先收藏'], html: '<div class="c5"><h2>收尾</h2></div>', source: [] },
+    ],
+  })
+
+  const gen = await request('derive/generate', {
+    id: article.id,
+    platform: 'xhs',
+    referenceImages: [tinyPng],
+  })
+  assert.equal(gen.status, 200)
+  assert.ok(seenContents[0].some(p => p.type === 'image' && p.mediaType === 'image/png'))
+
+  setOutput('<xhs-card page="2"><div class="ref-redesign"><h2>按参考图重设计</h2></div></xhs-card>')
+  const rd = await request('derive/redesign-card', {
+    id: article.id,
+    cardIndex: 1,
+    cardPrompt: '参考这张图的布局',
+    referenceImages: [tinyPng],
+  })
+  assert.equal(rd.status, 200)
+  assert.ok(seenContents.at(-1).some(p => p.type === 'image' && p.mediaType === 'image/png'))
 })

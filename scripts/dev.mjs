@@ -80,18 +80,124 @@ const replies = {
   'derive-xhs': user => {
     const { blocks } = JSON.parse(user)
     const ids = blocks.map(b => b.id)
-    return JSON.stringify({
+    const meta = {
+      deckStyle: 'tech',
+      tweaks: { preset: 'claude' },
       title: '排版外包给 AI 后真香',
       body: '以前写完一篇文章，最消耗耐心的反而是最后半小时的排版调样式。后来我干脆把排版固定成一条流水线：写完 Markdown 直接导出成稿，不再手动调字号、行距和配色。这套流程最大的好处是稳定，不用每次重来，也不必纠结样式细节，欢迎自取尝试。',
       tags: ['内容创作', '公众号排版', '效率工具', 'Markdown'],
       cards: [
-        { kind: 'cover', heading: '别再手动排版了', lines: ['写完 Markdown 直接出稿'], source: ids.slice(0, 1) },
-        { kind: 'quote', heading: '核心原则', lines: ['好排版，是让读者感觉不到排版。'], source: ids.slice(1, 3) },
-        { kind: 'list', heading: '省时间的三个关键', lines: ['先定死主题和样式表', '代码块引用块自动处理', '导出前只过一遍体检清单'], source: ids.slice(0, 3) },
-        { kind: 'quote', heading: '真实体验', lines: ['写完 Markdown 丢进去，回来就是能直接贴进编辑器的版式。'], source: ids.slice(1, 2) },
-        { kind: 'end', heading: '收藏这条慢慢用', lines: ['公众号同款流程持续更新中'], source: [] },
+        { kind: 'cover', layoutArchetype: 'editorial-hero-band', badge: '排版流水线 · 实测有效', heading: '别再手动调排版了', accent: '写完 Markdown 一键出稿', lines: ['样式表自动锁定 | 零手工返工'], tags: ['主题固定', '代码块对齐', '体检清单', '一次过稿'], source: ids.slice(0, 1) },
+        { kind: 'compare', layoutArchetype: 'before-after-table', badge: '前后对比', heading: '手调排版 vs 流水线出稿', lines: ['以前手调 | 写完再调字号、行距、配色，半小时起', '现在自动 | 丢进固定主题模板，30 秒直接定稿'], callout: '核心不是工具多花哨，而是把风格先写死。', source: ids.slice(0, 2) },
+        { kind: 'steps', layoutArchetype: 'manual-giant-steps', badge: '三步跑通', heading: '固定排版的三个动作', lines: ['锁定样式表 | 确定主色、圆角与字号比例', '结构化渲染 | 标题、引用块、代码块自动配齐', '导出前体检 | 过一遍图片比例和结尾固定行'], callout: '写完正文的精力留给内容本身，不再耗在格式细节。', source: ids.slice(1, 3) },
+        { kind: 'metrics', layoutArchetype: 'kpi-telemetry-board', badge: '实测变化', heading: '切流水线后的真实变化', lines: ['30s | 单篇导出耗时 | 比手动缩短 90%', '0 次 | 格式返工次数 | 粘贴进后台不跑版', '100% | 多平台复用 | 一稿直出即刻与小红书'], source: ids.slice(1, 3) },
+        { kind: 'grid', layoutArchetype: 'asymmetric-bento-quad', badge: '四个省心点', heading: '用起来最稳的四个设计', lines: ['主题隔离 | 一键切换配色不改内容', '配图留档 | 首图与插图集中追踪状态', '派生长出 | 串推与卡片共用母稿锚点', '本地草稿 | 切 Tab 不丢未保存编辑'], source: ids.slice(1, 3) },
+        { kind: 'end', layoutArchetype: 'dark-action-checklist', badge: '抄作业清单', heading: '用好这条工作流的 3 个原则', lines: ['先定规则 | 选定一套主题后坚持用 10 篇以上', '再做派生 | 先过母稿结构，再一键拆出社媒卡片', '最后复核 | 发前花 1 分钟对照体检提醒逐条打钩'], callout: '先收藏，下次写完长文直接按这套步骤出稿', source: [] },
       ],
-    })
+    }
+    return `<xhs-meta>${JSON.stringify(meta)}</xhs-meta>
+<xhs-style>
+.dev-kicker { display:inline-flex; align-items:center; gap:10px; font-size:22px; font-weight:800; color:var(--xhs-accent); letter-spacing:0.06em; }
+.dev-hero-box { background:var(--xhs-dark); color:#FFFFFF; border-radius:var(--xhs-radius); padding:34px; display:flex; flex-direction:column; gap:18px; flex:1; justify-content:space-between; }
+.dev-split { display:grid; grid-template-columns:1.15fr 0.85fr; gap:18px; flex:1; }
+</xhs-style>`
+  },
+  'derive-xhs-cards': user => {
+    const req = JSON.parse(user)
+    const styleNote = [
+      req.designPrompt ? req.designPrompt.slice(0, 14) : '',
+      req.referenceImageCount ? `参考图×${req.referenceImageCount}` : '',
+    ].filter(Boolean).join(' · ')
+    const styleSuffix = styleNote ? ` · ${styleNote}` : ''
+    const byPage = {
+      1: `<xhs-card page="1" kind="cover" heading="别再手动调排版了">
+  <div class="cd-header"><div class="dev-kicker">实测复盘${styleSuffix}</div><h1 class="cd-title-xl">别再手动调<span class="cd-hl">排版</span>了</h1><p class="cd-sub">写完 Markdown 一键出稿，样式表自动锁定</p></div>
+  <div class="cd-main">
+    <div class="dev-hero-box">
+      <div style="font-size:22px; color:var(--xhs-accent-line); font-weight:800;">EDITORIAL PIPELINE · 01</div>
+      <div style="font-size:44px; font-weight:900; line-height:1.25;">好排版，是让读者根本感觉不到排版。</div>
+      <div class="cd-code-strip"><span class="cd-code-pill">主题固定</span><span class="cd-code-pill">代码块对齐</span><span class="cd-code-pill">一次过稿</span></div>
+    </div>
+  </div>
+  <div class="cd-footer"><span>@林月半子 · 实操复盘</span><span>左滑看对比 →</span></div>
+</xhs-card>`,
+      2: `<xhs-card page="2" kind="compare" heading="手调排版 vs 流水线出稿">
+  <div class="cd-header"><div class="dev-kicker">02 / 前后对比</div><h2 class="cd-title">手调排版 vs 流水线出稿</h2></div>
+  <div class="cd-main">
+    <div class="cd-table-card"><table class="cd-table"><thead><tr><th>方式</th><th>耗时与痛点</th></tr></thead><tbody><tr><td class="is-bold">以前手调</td><td>写完再调字号、行距、配色，半小时起</td></tr><tr><td class="is-bold">现在自动</td><td>丢进固定主题模板，30 秒直接定稿</td></tr></tbody></table></div>
+    <div class="cd-callout"><div class="cd-callout-line">核心不是工具多花哨，而是把风格先写死。</div></div>
+  </div>
+  <div class="cd-footer"><span>@林月半子</span><span>02 / 06</span></div>
+</xhs-card>`,
+      3: `<xhs-card page="3" kind="steps" heading="固定排版的三个动作">
+  <div class="cd-header"><div class="mn-topbar"><span>实操步骤</span><span>03 / 06</span></div><h2 class="cd-title">固定排版的三个动作</h2></div>
+  <div class="cd-main">
+    <ol class="cd-step-list" style="list-style:none;">
+      <li class="cd-step-item"><span class="cd-step-num">1</span><div class="cd-step-content"><div class="cd-step-title">锁定样式表</div><div class="cd-step-desc">确定主色、圆角与字号比例</div></div></li>
+      <li class="cd-step-item"><span class="cd-step-num">2</span><div class="cd-step-content"><div class="cd-step-title">结构化渲染</div><div class="cd-step-desc">标题、引用块、代码块自动配齐</div></div></li>
+      <li class="cd-step-item"><span class="cd-step-num">3</span><div class="cd-step-content"><div class="cd-step-title">导出前体检</div><div class="cd-step-desc">过一遍图片比例和结尾固定行</div></div></li>
+    </ol>
+  </div>
+  <div class="cd-footer"><span>@林月半子</span><span>03 / 06</span></div>
+</xhs-card>`,
+      4: `<xhs-card page="4" kind="metrics" heading="切流水线后的真实变化">
+  <div class="cd-header"><div class="dev-kicker">04 / REAL DATA</div><h2 class="cd-title">切流水线后的真实变化</h2></div>
+  <div class="cd-main">
+    <div class="dev-split">
+      <div class="cd-bento is-tint"><span class="cd-metric-label">单篇导出耗时</span><div class="cd-metric-num">30s</div><span class="cd-metric-sub">比手动缩短 90%</span></div>
+      <div style="display:flex; flex-direction:column; gap:16px;">
+        <div class="cd-bento" style="flex:1;"><span class="cd-metric-label">格式返工次数</span><div class="cd-metric-num">0 次</div></div>
+        <div class="cd-bento" style="flex:1;"><span class="cd-metric-label">多平台复用</span><div class="cd-metric-num">100%</div></div>
+      </div>
+    </div>
+  </div>
+  <div class="cd-footer"><span>@林月半子</span><span>04 / 06</span></div>
+</xhs-card>`,
+      5: `<xhs-card page="5" kind="grid" heading="用起来最稳的四个设计">
+  <div class="cd-header"><div class="dev-kicker">05 / HIGHLIGHTS</div><h2 class="cd-title">用起来最稳的四个设计</h2></div>
+  <div class="cd-main">
+    <div class="cd-col-grid" style="--cols:2;">
+      <div class="cd-bento"><strong class="cd-bento-title">主题隔离</strong><p class="cd-bento-body">一键切换配色不改内容</p></div>
+      <div class="cd-bento"><strong class="cd-bento-title">配图留档</strong><p class="cd-bento-body">首图与插图集中追踪状态</p></div>
+      <div class="cd-bento"><strong class="cd-bento-title">派生长出</strong><p class="cd-bento-body">串推与卡片共用母稿锚点</p></div>
+      <div class="cd-bento"><strong class="cd-bento-title">本地草稿</strong><p class="cd-bento-body">切 Tab 不丢未保存编辑</p></div>
+    </div>
+  </div>
+  <div class="cd-footer"><span>@林月半子</span><span>05 / 06</span></div>
+</xhs-card>`,
+      6: `<xhs-card page="6" kind="end" heading="用好这条工作流的 3 个原则">
+  <div class="cd-header"><span class="cd-accent-pill">抄作业清单</span><h2 class="cd-title">用好这条工作流的 3 个原则</h2></div>
+  <div class="cd-main">
+    <div class="cd-card cd-grow"><p class="cd-bento-body">1. 先定规则：选定一套主题坚持用 10 篇以上</p><p class="cd-bento-body">2. 再做派生：先过母稿再拆社媒卡片</p><p class="cd-bento-body">3. 最后复核：发前花 1 分钟对照体检提醒打钩</p></div>
+  </div>
+  <div class="cd-footer"><span>@林月半子</span><span>06 / 06</span></div>
+</xhs-card>`,
+    }
+    return (req.targetCards || []).map(c => byPage[c.page] || '').filter(Boolean).join('\n')
+  },
+  'derive-xhs-card': user => {
+    const req = JSON.parse(user)
+    const page = req.page || 1
+    const heading = req.targetCard?.heading || `第 ${page} 页重设计`
+    const note = [
+      req.cardPrompt ? `按想法「${req.cardPrompt}」重设计` : '全新差异化排版构图',
+      req.referenceImageCount ? `参考图×${req.referenceImageCount}` : '',
+    ].filter(Boolean).join(' · ')
+    return `<xhs-page-style page="${page}">
+.redesign-banner { background: var(--xhs-dark); color: #FFFFFF; padding: 26px 30px; border-radius: var(--xhs-radius); display: flex; justify-content: space-between; align-items: center; }
+.redesign-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; flex: 1; }
+</xhs-page-style>
+<xhs-card page="${page}">
+  <div class="cd-header"><span class="cd-accent-pill">✨ 单页重设计 · 第 ${page} 页</span><h2 class="cd-title">${heading}</h2><p class="cd-sub">${note}</p></div>
+  <div class="cd-main">
+    <div class="redesign-banner"><strong>全新信息层级</strong><span>0${page} / REDESIGN</span></div>
+    <div class="redesign-cols">
+      <div class="cd-bento is-tint"><strong class="cd-bento-title">核心要点</strong><p class="cd-bento-body">${(req.targetCard?.lines || ['关键动作拆解'])[0]}</p></div>
+      <div class="cd-bento"><strong class="cd-bento-title">落地提醒</strong><p class="cd-bento-body">${req.targetCard?.callout || '配色主题完全正交，可随时切换换肤'}</p></div>
+    </div>
+  </div>
+  <div class="cd-footer"><span>已局部重设计（其他页未动）</span><span>0${page}</span></div>
+</xhs-card>`
   },
 }
 
@@ -99,14 +205,21 @@ const llm = {
   listProviders: () => [{ id: 'deepseek', name: 'DeepSeek' }, { id: 'kimi', name: 'kimi-coding' }, { id: 'broken', name: '读不到的提供方' }],
   async listModels(id) {
     if (id === 'broken') throw new Error('offline')
-    return id === 'deepseek' ? [{ id: 'deepseek-v4-pro', name: 'DeepSeek-V4-Pro' }, { id: 'deepseek-v4.1-flash', name: 'DeepSeek-V4.1-Flash' }] : [{ id: 'kimi-k3', name: 'Kimi K3' }]
+    return id === 'deepseek'
+      ? [
+        { id: 'deepseek-v4-pro', name: 'DeepSeek-V4-Pro', inputModalities: ['text', 'image'] },
+        { id: 'deepseek-v4.1-flash', name: 'DeepSeek-V4.1-Flash', inputModalities: ['text'] },
+      ]
+      : [{ id: 'kimi-k3', name: 'Kimi K3', inputModalities: ['text', 'image'] }]
   },
   async prepareCall() {
     return {
       config: {},
       async *stream({ messages }) {
         const { task } = messages[0].source
-        const text = replies[task](messages[0].content[0].text)
+        const parts = Array.isArray(messages[0].content) ? messages[0].content : []
+        const userText = parts.find(p => p?.type === 'text')?.text ?? String(messages[0].content ?? '')
+        const text = replies[task](userText)
         for (let i = 0; i < text.length; i += 24) {
           await new Promise(resolve => setTimeout(resolve, task === 'draft' ? 40 : 8))
           yield { type: 'text-delta', text: text.slice(i, i + 24) }

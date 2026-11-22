@@ -153,6 +153,62 @@ test('createStandaloneCtx 支持非流式 JSON 响应回退', async () => {
   assert.equal(text, '{"ok":true}')
 })
 
+test('createStandaloneCtx 将参考图转为 OpenAI image_url 多模态消息，并在模型不支持识图时自动降级为纯文本', async () => {
+  const tinyPng = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=='
+  const requests = []
+  const visionCtx = createStandaloneCtx({
+    apiKey: 'demo-credential-123',
+    baseUrl: 'https://api.deepseek.com/v1',
+    model: 'demo-vision',
+    fetchImpl: async (_url, init) => {
+      requests.push(JSON.parse(init.body))
+      return Response.json({ choices: [{ message: { content: 'ok-vision' } }] })
+    },
+  })
+  const out = await callModel(visionCtx, {
+    system: 'sys',
+    user: 'hello',
+    images: [tinyPng],
+    task: 'vision-test',
+  })
+  assert.equal(out, 'ok-vision')
+  assert.equal(requests.length, 1)
+  assert.ok(Array.isArray(requests[0].messages[1].content))
+  assert.deepEqual(requests[0].messages[1].content[0], { type: 'text', text: 'hello' })
+  assert.deepEqual(requests[0].messages[1].content[1], {
+    type: 'image_url',
+    image_url: { url: tinyPng },
+  })
+
+  // 模型返回不支持图片输入时，自动降级为纯文本并回调 onImageFallback
+  const fallbackReqs = []
+  let fallbackNotice = ''
+  const textOnlyCtx = createStandaloneCtx({
+    apiKey: 'demo-credential-123',
+    baseUrl: 'https://api.deepseek.com/v1',
+    model: 'demo-text-only',
+    fetchImpl: async (_url, init) => {
+      const body = JSON.parse(init.body)
+      fallbackReqs.push(body)
+      if (Array.isArray(body.messages[1].content)) {
+        return new Response(JSON.stringify({ error: { message: 'model does not support image input' } }), { status: 400 })
+      }
+      return Response.json({ choices: [{ message: { content: 'ok-text-fallback' } }] })
+    },
+  })
+  const fallbackOut = await callModel(textOnlyCtx, {
+    system: 'sys',
+    user: 'hello',
+    images: [tinyPng],
+    task: 'vision-fallback-test',
+    onImageFallback: reason => { fallbackNotice = reason },
+  })
+  assert.equal(fallbackOut, 'ok-text-fallback')
+  assert.equal(fallbackReqs.length, 2)
+  assert.equal(fallbackReqs[1].messages[1].content, 'hello')
+  assert.match(fallbackNotice, /不支持|忽略参考图/)
+})
+
 test('createStandaloneCtx 缺少密钥时报错且不发起请求，错误响应不泄漏密钥', async () => {
   let called = false
   const noKeyCtx = createStandaloneCtx({

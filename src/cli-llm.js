@@ -45,14 +45,31 @@ export function resolveStandaloneLlmConfig(env = process.env, overrides = {}) {
   }
 }
 
-function extractUserText(messages) {
+function extractUserMessages(messages) {
   const out = []
   for (const msg of messages ?? []) {
     if (typeof msg?.content === 'string') {
       out.push({ role: msg.role || 'user', content: msg.content })
     } else if (Array.isArray(msg?.content)) {
-      const text = msg.content.filter(part => part?.type === 'text' && typeof part.text === 'string').map(part => part.text).join('')
-      out.push({ role: msg.role || 'user', content: text })
+      const hasImages = msg.content.some(part => part?.type === 'image' && typeof part.data === 'string')
+      if (!hasImages) {
+        const text = msg.content.filter(part => part?.type === 'text' && typeof part.text === 'string').map(part => part.text).join('')
+        out.push({ role: msg.role || 'user', content: text })
+      } else {
+        const parts = []
+        for (const part of msg.content) {
+          if (part?.type === 'text' && typeof part.text === 'string') {
+            parts.push({ type: 'text', text: part.text })
+          } else if (part?.type === 'image' && typeof part.data === 'string') {
+            const mime = part.mediaType || part.mimeType || 'image/jpeg'
+            parts.push({
+              type: 'image_url',
+              image_url: { url: `data:${mime};base64,${part.data}` },
+            })
+          }
+        }
+        out.push({ role: msg.role || 'user', content: parts })
+      }
     }
   }
   return out
@@ -96,7 +113,7 @@ export function createStandaloneCtx({ apiKey = '', baseUrl = DEFAULT_BASE_URL, m
         async *stream(req) {
           const messages = []
           if (req.system) messages.push({ role: 'system', content: String(req.system) })
-          messages.push(...extractUserText(req.messages))
+          messages.push(...extractUserMessages(req.messages))
 
           const signal = req.signal ?? AbortSignal.timeout(TIMEOUT_MS)
           let res

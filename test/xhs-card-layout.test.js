@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import { test } from 'node:test'
-import { CARD_SIZE, FONT_STACK, PADDING, layoutCard, wrapText } from '../client/xhs-card-layout.js'
+import { CARD_SIZE, FONT_STACK, PADDING, XHS_DECK_STYLES, layoutCard, wrapText } from '../client/xhs-card-layout.js'
 
 const BLUE_PALETTE = {
   main: '#2952B6',
@@ -33,77 +33,80 @@ test('xhs-card-layout.js 纯函数且不含 node:* 或 DOM 全局对象', async 
   assert.doesNotMatch(src, /\b(?:document|window)\b/)
   assert.equal(CARD_SIZE.width, 1080)
   assert.equal(CARD_SIZE.height, 1440)
-  assert.equal(PADDING, 96)
+  assert.equal(PADDING, 80)
+  assert.deepEqual(XHS_DECK_STYLES, ['tech', 'editorial', 'bold'])
   assert.ok(FONT_STACK.includes('PingFang SC'))
 })
 
 test('wrapText 支持中文按宽断行、行首行尾禁则与英文单词不拆开', () => {
   const measure = fixedMeasure(40)
-  // 1. 中文断行且句号不出现在行首
   const lines = wrapText('第一句话刚好到这里结束。第二句话接着开始展示排版效果。', 400, measure)
   assert.ok(lines.length >= 2)
   for (const line of lines.slice(1)) {
     assert.doesNotMatch(line, /^[，。！？、；：）」』》”’…]/)
   }
 
-  // 2. 左括号不放行尾
   const openBracketLines = wrapText('这是一个用于测试左括号（不能留在行尾的例子）文本', 320, measure)
   for (const line of openBracketLines.slice(0, -1)) {
     assert.doesNotMatch(line, /[（(「『《“‘]$/)
   }
 
-  // 3. 英文单词不被拆开
   const mixed = wrapText('用 OpenAI 做高效自动化的文章拆解流程', 240, measure)
   assert.ok(mixed.some(line => line.includes('OpenAI')), `OpenAI 不应被拆开: ${JSON.stringify(mixed)}`)
 
-  // 4. 单个超长英文单词降级硬拆且不死循环
   const longWord = wrapText('supercalifragilisticexpialidocious', 160, measure)
   assert.ok(longWord.length >= 2)
   assert.equal(longWord.join(''), 'supercalifragilisticexpialidocious')
 })
 
-test('layoutCard 渲染 cover/quote/list/end 四种版式、页码与 palette 配色', () => {
+test('layoutCard 渲染全部 8 种版式、3 套视觉风格、image 指令与旧数据兼容', () => {
   const measure = (text, fontPx) => fixedMeasure(fontPx)(text)
-  const opts = { index: 1, total: 6, palette: BLUE_PALETTE, author: '林月半子' }
+  const opts = { index: 1, total: 8, palette: BLUE_PALETTE, author: '林月半子', deckStyle: 'tech' }
 
-  const cover = layoutCard({ kind: 'cover', heading: '把长文拆成高密度笔记', lines: ['三分钟完成多平台分发'] }, opts, measure)
-  assert.equal(cover.overflow, false)
-  assert.ok(cover.ops.some(op => op.type === 'text' && op.text === '2/6'))
-  assert.ok(cover.ops.some(op => op.type === 'text' && op.text === '林月半子'))
-  assert.ok(cover.ops.some(op => op.type === 'rect' && op.fill === BLUE_PALETTE.mark))
-  const markIdx = cover.ops.findIndex(op => op.type === 'rect' && op.fill === BLUE_PALETTE.mark)
-  const titleIdx = cover.ops.findIndex(op => op.type === 'text' && op.color === BLUE_PALETTE.main && op.fontPx >= 72)
-  assert.ok(markIdx !== -1 && titleIdx !== -1 && markIdx < titleIdx, '荧光笔底块需在标题文字之前绘制')
+  const cards = [
+    { kind: 'cover', badge: '实操笔记', heading: '我给 AI 办了个邮箱', accent: '它每天替我拆信', lines: ['两个 Bot 共用一个邮箱'], tags: ['实测', '双Bot'], callout: '左滑看详细拆解 →' },
+    { kind: 'compare', badge: '痛点', heading: '以前和现在', lines: ['以前 | 每次手动复制上下文', '现在 | 自动共享全部记录'], callout: '彻底告别复制粘贴' },
+    { kind: 'steps', badge: 'STEP 03', heading: '三步完成', lines: ['起草 | 搭项目骨架', '审查 | 跨端提建议', '落地 | 一键打包'], imageUrl: 'https://cdn.example.com/ui.png', callout: '全程无人工搬运' },
+    { kind: 'metrics', badge: '实测数据', heading: '首字快不快', lines: ['1.1 s | 首 Token 延迟 | 约 1 秒出首字', '141.6 | 生成速度 | token/s', '0 次 | 失败重试 | 一次跑通'], callout: '稳定不限流' },
+    { kind: 'grid', badge: '优势', heading: '四个亮点', lines: ['高密度 | 一眼看懂', '无依赖 | 本地可跑', '多风格 | 一键切换', '防出错 | 严格校验'], callout: '记住这四点就行' },
+    { kind: 'list', badge: '清单', heading: '实战注意事项', lines: ['保留原始数据', '压缩过渡空话'], imageUrl: 'wechat-studio/cover/image?id=a1&asset=c1' },
+    { kind: 'quote', heading: '核心观点', lines: ['先做最小可用版本，再收集真实反馈。'] },
+    { kind: 'end', heading: '照着直接用', lines: ['信息源 | 订阅官方博客', '晚间简报 | 每天汇总一次'], callout: '先收藏备用' },
+  ]
 
-  const quoteShort = layoutCard({ kind: 'quote', heading: '核心观点', lines: ['先做最小可用版本，再收集真实反馈。'] }, opts, measure)
-  assert.equal(quoteShort.overflow, false)
-  const quoteTextOp = quoteShort.ops.find(op => op.type === 'text' && op.text.includes('最小可用'))
-  assert.equal(quoteTextOp.fontPx, 64)
-
-  const listCard = layoutCard({ kind: 'list', heading: '三步清单', lines: ['保留原始数据', '压缩过渡空话', '导出纯正卡片'] }, opts, measure)
-  assert.equal(listCard.overflow, false)
-  assert.ok(listCard.ops.some(op => op.type === 'text' && op.text === '1'))
-  assert.ok(listCard.ops.some(op => op.type === 'text' && op.text === '3'))
-
-  const endCard = layoutCard({ kind: 'end', heading: '点个收藏备用', lines: ['公众号搜「林月半子」看全文'] }, opts, measure)
-  assert.equal(endCard.overflow, false)
-  assert.ok(endCard.ops.some(op => op.type === 'rect' && op.fill === BLUE_PALETTE.tint))
-
-  // 非溢出卡片所有坐标在画布范围内
-  for (const res of [cover, quoteShort, listCard, endCard]) {
+  cards.forEach((card, i) => {
+    const res = layoutCard(card, { ...opts, index: i }, measure)
+    assert.equal(res.overflow, false, `${card.kind} 不应溢出`)
+    assert.ok(res.ops.some(op => op.type === 'text' && op.text === `${i + 1}/8`))
+    assert.ok(res.ops.some(op => op.type === 'text' && op.text === '@林月半子'))
+    // 所有坐标都在画布范围内
     for (const op of res.ops) {
-      if (op.type === 'rect') {
-        assert.ok(op.x >= 0 && op.y >= 0 && op.x + op.w <= CARD_SIZE.width && op.y + op.h <= CARD_SIZE.height)
-      } else {
-        assert.ok(op.x >= 0 && op.x <= CARD_SIZE.width && op.y >= 0 && op.y <= CARD_SIZE.height)
+      if (op.type === 'rect' || op.type === 'dotGrid' || op.type === 'image') {
+        assert.ok(op.x >= 0 && op.y >= 0 && op.x + op.w <= CARD_SIZE.width && op.y + op.h <= CARD_SIZE.height, `${card.kind} ${op.type} 越界`)
+      } else if (op.type === 'line' || op.type === 'arrow') {
+        assert.ok(op.x1 >= 0 && op.x2 <= CARD_SIZE.width && op.y1 >= 0 && op.y2 <= CARD_SIZE.height)
       }
     }
-  }
+  })
 
-  // 配色切换会反映到 ops 中
+  // steps / list 带 imageUrl 时产出 image 指令
+  const stepsRes = layoutCard(cards[2], opts, measure)
+  assert.ok(stepsRes.ops.some(op => op.type === 'image' && op.src === 'https://cdn.example.com/ui.png'))
+  assert.ok(stepsRes.ops.some(op => op.type === 'arrow'))
+
+  // 旧卡片数据（不含 badge / accent / callout / tags）也能生成丰富的卡片元素
+  const legacyCover = layoutCard({ kind: 'cover', heading: '旧版封面标题', lines: ['副标题'] }, { index: 0, total: 5, palette: BLUE_PALETTE }, measure)
+  assert.ok(legacyCover.ops.some(op => op.type === 'rect' && op.fill === BLUE_PALETTE.main))
+  assert.ok(legacyCover.ops.some(op => op.type === 'text' && op.text === '实操笔记'))
+
+  // 3 套风格产生差异化元素（tech 含 dotGrid，editorial 含 polygon，bold 含硬投影）
+  assert.ok(layoutCard(cards[0], { ...opts, deckStyle: 'tech' }, measure).ops.some(op => op.type === 'dotGrid'))
+  assert.ok(layoutCard(cards[0], { ...opts, deckStyle: 'editorial' }, measure).ops.some(op => op.type === 'polygon'))
+  assert.ok(layoutCard(cards[1], { ...opts, deckStyle: 'bold' }, measure).ops.some(op => op.type === 'rect' && op.shadow?.color === '#18181B'))
+
+  // 配色切换反映到 ops 中
   const tealCover = layoutCard({ kind: 'cover', heading: '切换配色', lines: [] }, { ...opts, palette: TEAL_PALETTE }, measure)
-  assert.ok(tealCover.ops.some(op => op.type === 'rect' && op.fill === TEAL_PALETTE.soft))
-  assert.ok(tealCover.ops.some(op => op.type === 'rect' && op.fill === TEAL_PALETTE.main))
+  assert.ok(tealCover.ops.some(op => op.fill === TEAL_PALETTE.main || op.color === TEAL_PALETTE.main))
   assert.ok(!tealCover.ops.some(op => op.fill === BLUE_PALETTE.main || op.color === BLUE_PALETTE.main))
 })
 
@@ -124,5 +127,5 @@ test('layoutCard 超长 quote 降到下限字号并标出 overflow === true', ()
   )
   assert.equal(hugeQuote.overflow, true)
   const quoteLines = hugeQuote.ops.filter(op => op.type === 'text' && op.text.includes('测试'))
-  assert.ok(quoteLines.length > 0 && quoteLines.every(op => op.fontPx === 44))
+  assert.ok(quoteLines.length > 0 && quoteLines.every(op => op.fontPx === 40))
 })

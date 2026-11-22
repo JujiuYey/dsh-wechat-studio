@@ -1,9 +1,60 @@
+import { cardContentVersion } from '../src/derive-shared.js'
+
 export function deriveDraftKey(articleId, platform) {
   return `${articleId}:${platform}`
 }
 
 export function recordVersion(record) {
   return `${record?.createdAt ?? ''}:${record?.editedAt ?? ''}:${record?.variant ?? ''}`
+}
+
+export function xhsCardDraftSignature(card) {
+  if (!card) return ''
+  return `${cardContentVersion(card)}:${JSON.stringify(card.imageFraming ?? null)}`
+}
+
+export function hasUnsavedXhsCardDraft(record, draftEntry, cardIndex) {
+  const localCard = draftEntry?.payload?.cards?.[cardIndex]
+  if (!localCard) return false
+  const serverCard = record?.payload?.cards?.[cardIndex]
+  if (!serverCard) return true
+  return xhsCardDraftSignature(localCard) !== xhsCardDraftSignature(serverCard)
+}
+
+export function mergeRedesignedXhsCardDraft({
+  existingDraft,
+  serverRecord,
+  cardIndex,
+  expectedDraftCardHash = '',
+} = {}) {
+  const serverCard = serverRecord?.payload?.cards?.[cardIndex] ?? null
+  if (!existingDraft?.payload || !serverCard) {
+    return { status: 'no-draft', nextDraft: null, serverCard }
+  }
+  const currentLocalCard = existingDraft.payload.cards?.[cardIndex] ?? null
+  const currentLocalHash = xhsCardDraftSignature(currentLocalCard)
+  if (expectedDraftCardHash && currentLocalHash && currentLocalHash !== expectedDraftCardHash) {
+    return {
+      status: 'local-changed',
+      nextDraft: existingDraft,
+      serverCard,
+    }
+  }
+  const mergedCards = (existingDraft.payload.cards ?? []).map((card, idx) => (
+    idx === cardIndex ? serverCard : card
+  ))
+  return {
+    status: 'merged',
+    nextDraft: {
+      ...existingDraft,
+      baseVersion: recordVersion(serverRecord),
+      payload: {
+        ...existingDraft.payload,
+        cards: mergedCards,
+      },
+    },
+    serverCard,
+  }
 }
 
 export function resolveThreadEditorState(record, draftEntry) {

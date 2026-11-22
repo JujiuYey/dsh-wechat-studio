@@ -6,11 +6,14 @@ import {
   canExportMarkdown,
   deriveDraftKey,
   hasUnsavedDeriveDrafts,
+  hasUnsavedXhsCardDraft,
+  mergeRedesignedXhsCardDraft,
   recordVersion,
   resolveThreadEditorState,
   resolveXhsEditorState,
   shouldConfirmDeriveAction,
   summarizeCardPreviews,
+  xhsCardDraftSignature,
 } from '../client/derive-draft-model.js'
 
 test('derive-draft-model.js 不含 node:* 或 DOM 全局对象引用', async () => {
@@ -134,4 +137,86 @@ test('Bug 4: summarizeCardPreviews 明确区分全部成功、部分失败和全
   assert.equal(allFail.status, 'error')
   assert.equal(allFail.failedCount, 2)
   assert.equal(allFail.error, '无 Canvas 上下文')
+})
+
+test('单页重设计草稿保护：检测目标页未保存改动，并在请求期间目标页继续被编辑时不自动覆盖', () => {
+  const serverRecord = {
+    platform: 'xhs',
+    createdAt: '2026-11-22T10:00:00.000Z',
+    editedAt: null,
+    payload: {
+      title: '测试笔记',
+      body: '正文'.repeat(60),
+      tags: ['a', 'b', 'c'],
+      cards: [
+        { kind: 'cover', heading: '第1页原版', lines: ['亮点'], html: '<div class="p1">旧第1页</div>', source: ['b1'] },
+        { kind: 'compare', heading: '第2页原版', lines: ['以前 | 慢', '现在 | 快'], html: '<div class="p2">旧第2页</div>', source: ['b1'] },
+        { kind: 'steps', heading: '第3页原版', lines: ['1 | a', '2 | b', '3 | c'], html: '<div class="p3">旧第3页</div>', source: ['b2'] },
+      ],
+    },
+  }
+
+  // 仅修改第 1 页 HTML，第 2 页未修改
+  const draftEntry = {
+    baseVersion: recordVersion(serverRecord),
+    payload: {
+      ...serverRecord.payload,
+      cards: [
+        { ...serverRecord.payload.cards[0], html: '<div class="p1-local">第1页本地手改</div>' },
+        serverRecord.payload.cards[1],
+        { ...serverRecord.payload.cards[2], html: '<div class="p3-local">第3页本地手改</div>' },
+      ],
+    },
+  }
+  assert.equal(hasUnsavedXhsCardDraft(serverRecord, draftEntry, 0), true)
+  assert.equal(hasUnsavedXhsCardDraft(serverRecord, draftEntry, 1), false)
+  assert.equal(hasUnsavedXhsCardDraft(serverRecord, draftEntry, 2), true)
+
+  const redesignedServerRecord = {
+    ...serverRecord,
+    editedAt: '2026-11-22T10:01:00.000Z',
+    payload: {
+      ...serverRecord.payload,
+      cards: [
+        { ...serverRecord.payload.cards[0], html: '<div class="p1-new">服务端重设计第1页</div>' },
+        { ...serverRecord.payload.cards[1], html: '<div class="p2-new">服务端重设计第2页</div>' },
+        serverRecord.payload.cards[2],
+      ],
+    },
+  }
+
+  // 场景 A：重设计第 2 页，请求期间第 2 页未继续编辑 -> 仅替换第 2 页，保留第 1/3 页本地草稿
+  const mergedPage2 = mergeRedesignedXhsCardDraft({
+    existingDraft: draftEntry,
+    serverRecord: redesignedServerRecord,
+    cardIndex: 1,
+    expectedDraftCardHash: xhsCardDraftSignature(draftEntry.payload.cards[1]),
+  })
+  assert.equal(mergedPage2.status, 'merged')
+  assert.ok(mergedPage2.nextDraft.payload.cards[1].html.includes('p2-new'))
+  assert.ok(mergedPage2.nextDraft.payload.cards[0].html.includes('p1-local'))
+  assert.ok(mergedPage2.nextDraft.payload.cards[2].html.includes('p3-local'))
+
+  // 场景 B：发起第 1 页重设计时记录了快照，等待期间用户又修改了第 1 页 -> 返回 local-changed，绝不自动覆盖
+  const startHashPage1 = xhsCardDraftSignature(draftEntry.payload.cards[0])
+  const draftEditedInFlight = {
+    ...draftEntry,
+    payload: {
+      ...draftEntry.payload,
+      cards: [
+        { ...draftEntry.payload.cards[0], html: '<div class="p1-inflight">等待期间又改了第1页</div>' },
+        draftEntry.payload.cards[1],
+        draftEntry.payload.cards[2],
+      ],
+    },
+  }
+  const protectedResult = mergeRedesignedXhsCardDraft({
+    existingDraft: draftEditedInFlight,
+    serverRecord: redesignedServerRecord,
+    cardIndex: 0,
+    expectedDraftCardHash: startHashPage1,
+  })
+  assert.equal(protectedResult.status, 'local-changed')
+  assert.ok(protectedResult.nextDraft.payload.cards[0].html.includes('p1-inflight'))
+  assert.ok(protectedResult.serverCard.html.includes('p1-new'))
 })

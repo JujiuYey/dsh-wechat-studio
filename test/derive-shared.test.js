@@ -6,10 +6,18 @@ import {
   DERIVE_PLATFORMS,
   MARKDOWN_TARGETS,
   THREAD_VARIANTS,
+  XHS_STYLE_PRESETS,
+  cardContentVersion,
   charCount,
+  computeDomTopologySignature,
+  findHardcodedBrandColors,
   normalizeThread,
   normalizeXhs,
   numberTokens,
+  parseSingleXhsCardMarkup,
+  parseXhsDeckMarkup,
+  sanitizeXhsCardHtml,
+  sanitizeXhsCss,
   sourceOverlap,
   threadClipboardText,
   unsupportedFacts,
@@ -198,7 +206,7 @@ test('normalizeXhs 校验结构、卡片类型顺序、字段必填与事实/金
         { kind: 'cover', heading: '这是一个超过十六字上限的封面标题啦', lines: [], source: [] },
         { kind: 'quote', heading: '', lines: ['二'], source: [] },
         { kind: 'list', heading: '清单', lines: ['a', 'b'], source: [] },
-        { kind: 'list', heading: '清单二', lines: ['第一行正常', '第二行刚好二十五个字用来复现一次多点报错的真实情况'], source: [] },
+        { kind: 'list', heading: '清单二', lines: ['第一行正常', '第二行刚好二十九个字用来复现一次多点报错的真实测试情况啦啦'], source: [] },
         { kind: 'end', heading: '尾页', lines: [], source: [] },
       ],
     })),
@@ -211,14 +219,19 @@ test('normalizeXhs 校验结构、卡片类型顺序、字段必填与事实/金
     cards: [
       { kind: 'cover', heading: '这是一个超过十六字上限的封面标题啦', lines: [], source: [] },
       { kind: 'quote', heading: '', lines: ['先做最小可用版本，再收集真实反馈'], source: [] },
-      { kind: 'list', heading: '清单', lines: ['a', '第二行刚好二十五个字用来复现一次单行超限一字情况啦'], source: [] },
+      { kind: 'list', heading: '清单', lines: ['a', '字'.repeat(29)], source: [] },
       { kind: 'quote', heading: '', lines: ['先做最小可用版本，再收集真实反馈'], source: [] },
       { kind: 'end', heading: '尾页', lines: [], source: [] },
     ],
   }), { strictCardLength: false })
   assert.ok(relaxed.warnings.some(w => w.includes('第 1 页卡片标题偏长')))
-  assert.ok(relaxed.warnings.some(w => w.includes('第 3 页第 2 行偏长') && w.includes('25 字')))
+  assert.ok(relaxed.warnings.some(w => w.includes('第 3 页第 2 行偏长') && w.includes('29 字')))
   assert.ok(relaxed.warnings.some(w => w.includes('正文偏短')))
+
+  const relaxedLongBody = normalizeXhs(makeXhs({
+    body: '字'.repeat(1048),
+  }), { strictCardLength: false })
+  assert.ok(relaxedLongBody.warnings.some(w => w.includes('正文偏长') && w.includes('1048 字')))
 
   assert.throws(
     () => normalizeXhs(makeXhs({ title: '字'.repeat(21) }), { strictCardLength: false }),
@@ -238,6 +251,58 @@ test('normalizeXhs 校验结构、卡片类型顺序、字段必填与事实/金
   )
 })
 
+test('normalizeXhs 支持全部 8 种卡型、deckStyle、富字段清洗、imageUrl 白名单与单一版式提醒', () => {
+  const rich = normalizeXhs({
+    deckStyle: 'editorial',
+    title: '高密度多版式卡片',
+    body: '这是一段足够一百字的小红书测试正文，主要测试新版八种卡片与多种视觉字段的清洗、保留以及白名单安全检查。'.repeat(2),
+    tags: ['效率工具', 'AI协作', '信息图'],
+    cards: [
+      {
+        kind: 'cover',
+        badge: '实操笔记',
+        heading: '把长文拆成高颜值卡片',
+        accent: '告别白纸黑字模板',
+        lines: ['八种版式智能搭配'],
+        tags: ['#冷白科技风', '双Agent'],
+        callout: '左滑看实测',
+        imageUrl: 'javascript:alert(1)',
+        source: [],
+      },
+      { kind: 'compare', badge: '痛点', heading: '新旧对比', lines: ['以前 | 手工搬运', '现在 | 自动同步'], callout: '省下大量时间', source: [] },
+      { kind: 'steps', badge: '流程', heading: '三步跑通', lines: ['步骤一 | 准备母稿', '步骤二 | 提炼结构', '步骤三 | 导出大图'], imageUrl: 'https://cdn.example.com/step.png', source: [] },
+      { kind: 'metrics', badge: '数据', heading: '实测指标', lines: ['1.1 s | 首字延迟 | 稳定性高', '0 次 | 重试失败 | 一次通过'], source: [] },
+      { kind: 'grid', badge: '要点', heading: '四个亮点', lines: ['高对比 | 视觉层次清晰', '零依赖 | 浏览器直出'], source: [] },
+      { kind: 'end', badge: '总结', heading: '直接抄作业', lines: ['先收藏 | 跑通再来交作业'], callout: '欢迎交流', source: [] },
+    ],
+  })
+
+  assert.equal(rich.deckStyle, 'editorial')
+  assert.equal(rich.cards.length, 6)
+  assert.equal(rich.cards[0].badge, '实操笔记')
+  assert.equal(rich.cards[0].accent, '告别白纸黑字模板')
+  assert.deepEqual(rich.cards[0].tags, ['冷白科技风', '双Agent'])
+  assert.equal(rich.cards[0].imageUrl, undefined)
+  assert.equal(rich.cards[2].imageUrl, 'https://cdn.example.com/step.png')
+
+  // 非法 deckStyle 回落 tech；全部中页同 kind 给出温和提醒
+  const monotone = normalizeXhs({
+    deckStyle: 'unknown-style',
+    title: '单一版式测试',
+    body: '这是一段足够一百字的小红书测试正文，主要用来测试当全部中间页都是同一版式时给出提醒，且非法风格回落默认。'.repeat(2),
+    tags: ['标签一', '标签二', '标签三'],
+    cards: [
+      { kind: 'cover', heading: '封面', lines: [], source: [] },
+      { kind: 'list', heading: '第一页', lines: ['甲', '乙'], source: [] },
+      { kind: 'list', heading: '第二页', lines: ['甲', '乙'], source: [] },
+      { kind: 'list', heading: '第三页', lines: ['甲', '乙'], source: [] },
+      { kind: 'end', heading: '尾页', lines: [], source: [] },
+    ],
+  })
+  assert.equal(monotone.deckStyle, 'tech')
+  assert.ok(monotone.warnings.some(w => w.includes('卡片版式较为单一')))
+})
+
 test('normalizeThread 多条超限时合并报错', () => {
   const long = '汉'.repeat(141)
   assert.throws(
@@ -254,4 +319,170 @@ test('threadClipboardText 与 xhsClipboardText 生成规范剪贴板文本', () 
     xhsClipboardText({ title: '标题', body: '正文第一段\n\n正文第二段', tags: ['标签一', '标签二'] }),
     '标题\n\n正文第一段\n\n正文第二段\n\n#标签一 #标签二',
   )
+})
+
+test('sanitizeXhsCss 强制限定选择器在 .xhs-artboard 内并阻断外部请求与危险定位', () => {
+  assert.deepEqual(XHS_STYLE_PRESETS, ['claude', 'editorial', 'tech', 'emerald', 'bold', 'theme'])
+  const rawCss = `
+    @import url("https://evil.com/x.css");
+    @font-face { font-family: Evil; src: url(https://evil.com/f.woff2); }
+    body { display: none !important; }
+    * { box-sizing: border-box; }
+    .ws-derive-bar, .hero-box {
+      background-image: url(//evil.com/track.png);
+      background: image-set(url("https://evil.com/a.png") 1x);
+      position: fixed;
+      border: 2px solid var(--xhs-accent);
+      padding: 20px;
+    }
+  `
+  const scoped = sanitizeXhsCss(rawCss)
+  assert.doesNotMatch(scoped, /@import|@font-face|url\(|image-set\(|evil\.com/i)
+  assert.doesNotMatch(scoped, /position\s*:\s*fixed/i)
+  assert.match(scoped, /\.xhs-artboard\s*\{/)
+  assert.match(scoped, /\.xhs-artboard\s+\*\s*\{/)
+  assert.match(scoped, /\.xhs-artboard\s+\.hero-box\b/)
+  assert.match(scoped, /border:\s*2px solid var\(--xhs-accent\)/)
+  assert.match(scoped, /position:\s*absolute/)
+})
+
+test('sanitizeXhsCardHtml 严格执行标签、属性、图片 URL 与内联样式白名单，且不破坏本地 data:image 截图', () => {
+  const dirty = `
+    <div class="card" onclick="alert(1)" data-xhs-slot="image" style="position:fixed; background:url(https://evil.com/p.png); padding:16px">
+      <script>evil()</script>
+      <style>body{display:none}</style>
+      <iframe src="https://evil.com"></iframe>
+      <a href="javascript:alert(1)">链接文字</a>
+      <img src="javascript:alert(1)" alt="坏图" />
+      <img src="https://cdn.example.com/ok.png" alt="好图" data-img-fit="contain" />
+      <p>正常文案</p>
+    </div>
+  `
+  const clean = sanitizeXhsCardHtml(dirty)
+  assert.doesNotMatch(clean, /<script|<style|<iframe|onclick|javascript:|evil\.com|position:\s*fixed/i)
+  assert.ok(clean.includes('https://cdn.example.com/ok.png'))
+  assert.ok(clean.includes('data-img-fit="contain"'))
+  assert.ok(clean.includes('position:absolute'))
+  assert.ok(clean.includes('正常文案'))
+
+  // 超长 data:image base64 不计入 6000 字符 HTML 标签预算，不会被截断损坏
+  const bigDataUri = `data:image/png;base64,${'A'.repeat(12000)}`
+  const withLocalImg = sanitizeXhsCardHtml(`<div class="cd-shot-frame"><img src="${bigDataUri}" alt="本地截图" /></div>`)
+  assert.ok(withLocalImg.includes(bigDataUri), '本地截图 data URL 不应被 HTML 预算截断')
+})
+
+test('computeDomTopologySignature 忽略 class/文本准确识别同构版式并区分不同拓扑', () => {
+  const cardA = '<div class="cd-header"><h2>标题A</h2></div><div class="cd-main"><div class="alpha"><p>一</p><p>二</p></div></div>'
+  const cardB = '<div class="custom-hd"><h2>完全不同的标题B</h2></div><div class="custom-bd"><div class="beta" style="padding:12px"><p>三</p><p>四</p></div></div>'
+  const cardTable = '<div class="cd-header"><h2>对比</h2></div><div class="cd-main"><table><tbody><tr><td>旧</td><td>新</td></tr></tbody></table></div>'
+  const cardGrid = '<div class="cd-header"><h2>矩阵</h2></div><div class="cd-main"><div style="display:grid;grid-template-columns:repeat(2,1fr)"><div>1</div><div>2</div></div></div>'
+
+  assert.equal(computeDomTopologySignature(cardA), computeDomTopologySignature(cardB))
+  assert.notEqual(computeDomTopologySignature(cardA), computeDomTopologySignature(cardTable))
+  assert.notEqual(computeDomTopologySignature(cardTable), computeDomTopologySignature(cardGrid))
+})
+
+test('findHardcodedBrandColors 允许中性灰与语义状态色，捕获非中性硬编码主色', () => {
+  const ok = findHardcodedBrandColors('color: #0A0A0A; background: #FFFFFF; border-color: #E4E4EE; color: #15803D;')
+  assert.deepEqual(ok, [])
+  const bad = findHardcodedBrandColors('color: #6D3BF2; background: #FF6B35; border: 1px solid var(--xhs-accent);')
+  assert.deepEqual(bad, ['#6D3BF2', '#FF6B35'])
+})
+
+test('parseXhsDeckMarkup、parseSingleXhsCardMarkup、自定义 HTML 金句重合度与 cardContentVersion', () => {
+  const markup = `
+<xhs-meta>
+{
+  "title": "实操增长复盘",
+  "body": "这是一段超过一百字的小红书正文内容，记录我们在做最小可用版本与增长 1,200 人过程中的真实经验与步骤。".repeat_placeholder,
+  "tags": ["实操复盘", "增长", "最小版本"],
+  "tweaks": { "preset": "claude" }
+}
+</xhs-meta>
+<xhs-style>
+.custom-pill { border: 2px solid var(--xhs-accent); }
+body { display: none; }
+</xhs-style>
+<xhs-card page="1" kind="cover" heading="增长 1200 人复盘" badge="实测" source="b1">
+  <div class="cd-header"><h1>增长 1200 人复盘</h1></div>
+  <div class="cd-main"><p>先做最小可用版本</p></div>
+</xhs-card>
+<xhs-card page="2" kind="compare" heading="前后对比" source="b1">
+  <div class="cd-header"><h2>前后对比</h2></div>
+  <div class="cd-main"><table><tbody><tr><td>以前</td><td>空想三个月</td></tr></tbody></table></div>
+</xhs-card>
+<xhs-card page="3" kind="quote" heading="核心金句" source="b1">
+  <div class="cd-header"><h2>核心金句</h2></div>
+  <div class="cd-main"><blockquote>这段完全编造的话在母稿里根本没有出现过一句</blockquote></div>
+</xhs-card>
+<xhs-card page="4" kind="grid" heading="四个要点" source="b1">
+  <div class="cd-header"><h2>四个要点</h2></div>
+  <div class="cd-main"><div style="display:grid;grid-template-columns:repeat(2,1fr)"><div>甲</div><div>乙</div></div></div>
+</xhs-card>
+<xhs-card page="5" kind="end" heading="收藏备用" source="">
+  <div class="cd-header"><h2>收藏备用</h2></div>
+  <div class="cd-main"><p>照着做就行</p></div>
+</xhs-card>
+`.replace('".repeat_placeholder', '这是一段超过一百字的小红书正文内容，记录我们在做最小可用版本与增长 1,200 人过程中的真实经验与步骤。"')
+
+  const parsed = parseXhsDeckMarkup(markup)
+  assert.ok(parsed)
+  assert.equal(parsed.cards.length, 5)
+  assert.ok(parsed.customCss.includes('.custom-pill'))
+
+  const normalized = normalizeXhs({ ...parsed, designPrompt: '极简工具说明书感' }, {
+    blockIds: ['b1'],
+    sourceText: sampleSource,
+    strictCardLength: false,
+  })
+  assert.equal(normalized.designPrompt, '极简工具说明书感')
+  assert.ok(normalized.customCss.includes('.xhs-artboard .custom-pill'))
+  assert.doesNotMatch(normalized.customCss, /body\s*\{/)
+  assert.ok(normalized.warnings.some(w => w.includes('第 3 页金句偏离原文较多')), '自定义 HTML 金句卡也应触发 sourceOverlap 告警')
+
+  const single = parseSingleXhsCardMarkup(`
+<xhs-page-style>
+.local-box { padding: 18px; border: 2px solid var(--xhs-accent); }
+</xhs-page-style>
+<xhs-card kind="steps" heading="三步跑通" source="b1">
+  <div class="local-box"><ol><li>第一步</li><li>第二步</li></ol></div>
+</xhs-card>
+`)
+  assert.ok(single)
+  assert.equal(single.kind, 'steps')
+  assert.ok(single.pageCss.includes('.local-box'))
+  assert.ok(single.html.includes('第一步'))
+
+  const v1 = cardContentVersion(normalized.cards[1])
+  const v2 = cardContentVersion({ ...normalized.cards[1], heading: '改了标题' })
+  assert.notEqual(v1, v2)
+
+  // 回归：parseXhsDeckMarkup 容忍 <xhs-meta> 内含裸换行、未转义英文双引号、尾随逗号、缺少闭合标签，且不被紧随其后的 <xhs-style> 里的花括号破坏
+  const messyStage1 = `<think>构思视觉方向</think>
+<xhs-meta>
+\`\`\`json
+{
+  "deckStyle": "tech",
+  "tweaks": { "preset": "claude" },
+  "title": "两个 "Agent" 关进房间",
+  "body": "第一段正文包含裸换行
+第二段提到 "Claude" 和 Codex 协作的真实体验，凑满一百字以便后续完整校验通过，这里补充更多实操细节确保正文长度达标且段落清晰自然。",
+  "tags": ["实操复盘", "Agent", "效率工具",],
+  "cards": [
+    { "kind": "cover", "layoutArchetype": "hero", "heading": "两个 "Agent" 协作", "lines": ["零复制粘贴"], "source": ["b1"], }
+  ],
+}
+\`\`\`
+<xhs-style>
+.hero-tag { color: var(--xhs-accent); }
+</xhs-style>`
+  const parsedMessy = parseXhsDeckMarkup(messyStage1)
+  assert.ok(parsedMessy, '即使 <xhs-meta> 含裸换行、未转义双引号、未闭合标签且紧跟 <xhs-style>，也应成功解析')
+  assert.equal(parsedMessy.title, '两个 "Agent" 关进房间')
+  assert.equal(parsedMessy.cards[0].heading, '两个 "Agent" 协作')
+  assert.ok(parsedMessy.customCss.includes('.hero-tag'))
+})
+
+test('卡片组件直接子元素的字号规则在清洗后仍然生效', () => {
+  assert.match(sanitizeXhsCss('.panel > p { font-size: 30px }'), /\.xhs-artboard \.panel > p \{ font-size:30px;/)
 })
