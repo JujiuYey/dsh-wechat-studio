@@ -29,6 +29,9 @@ export const DERIVE_LIMITS = {
     customCss: 4000,
     totalDeckMarkup: 48000,
     designPrompt: 400,
+    referenceImages: 10,
+    referenceImagesPerCard: 2,
+    sharedReferenceImages: 1,
     cover: { lines: [0, 2], lineChars: 28 },
     compare: { lines: [2, 6], lineChars: 34 },
     steps: { lines: [3, 4], lineChars: 30 },
@@ -90,6 +93,72 @@ export function sanitizeReferenceImages(list, { maxCount = 3, maxChars = 650_000
     out.push(`data:${mediaType};base64,${match[2]}`)
   }
   return out
+}
+
+export function normalizeXhsReferencePlan(rawPlan, { cards = [], referenceImageIds = [] } = {}) {
+  if (!rawPlan || typeof rawPlan !== 'object') return null
+  const uploadedIds = Array.isArray(referenceImageIds) && referenceImageIds.length
+    ? new Set(referenceImageIds)
+    : null
+  const images = []
+  const roles = new Map()
+  for (const item of Array.isArray(rawPlan.images) ? rawPlan.images : []) {
+    const id = typeof item?.id === 'string' ? item.id : ''
+    const role = item?.role
+    if (!/^ref-(?:[1-9]|10)$/.test(id) || !['cover', 'content', 'style'].includes(role)) continue
+    if (uploadedIds && !uploadedIds.has(id)) continue
+    if (roles.has(id)) continue
+    const reason = typeof item.reason === 'string'
+      ? item.reason.replace(/[\r\n]+/g, ' ').replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, '').trim().slice(0, 120)
+      : ''
+    images.push({ id, role, reason })
+    roles.set(id, role)
+  }
+  if (!images.length) return null
+
+  const sharedImageIds = []
+  for (const id of Array.isArray(rawPlan.sharedImageIds) ? rawPlan.sharedImageIds : []) {
+    if (roles.get(id) !== 'style' || sharedImageIds.includes(id)) continue
+    if (sharedImageIds.length >= DERIVE_LIMITS.xhs.sharedReferenceImages) break
+    sharedImageIds.push(id)
+  }
+
+  const pagesByNumber = new Map()
+  for (const item of Array.isArray(rawPlan.pages) ? rawPlan.pages : []) {
+    const page = item?.page
+    if (!Number.isInteger(page) || page < 1 || page > cards.length) continue
+    for (const id of Array.isArray(item.imageIds) ? item.imageIds : []) {
+      const role = roles.get(id)
+      if (!role || (role === 'cover' && page !== 1) || (role === 'content' && page === 1)) continue
+      const entry = pagesByNumber.get(page) ?? { page, imageIds: [] }
+      if (entry.imageIds.includes(id)) continue
+      if (entry.imageIds.length >= DERIVE_LIMITS.xhs.referenceImagesPerCard) continue
+      entry.imageIds.push(id)
+      pagesByNumber.set(page, entry)
+    }
+  }
+  const pages = [...pagesByNumber.values()].filter(item => item.imageIds.length).sort((a, b) => a.page - b.page)
+  return { images, sharedImageIds, pages }
+}
+
+export function selectXhsReferenceImages(referenceImages, referencePlan, cardIndex) {
+  if (!Array.isArray(referenceImages) || !referencePlan) return []
+  const page = referencePlan.pages?.find(item => item.page === cardIndex + 1)
+  const ids = [...(referencePlan.sharedImageIds ?? []), ...(page?.imageIds ?? [])]
+  const seen = new Set()
+  const selected = []
+  for (const id of ids) {
+    if (seen.has(id)) continue
+    seen.add(id)
+    const match = /^ref-(?:[1-9]|10)$/.exec(id)
+    if (!match) continue
+    const index = Number(id.slice(4)) - 1
+    const item = referenceImages[index]
+    const dataUrl = typeof item === 'string' ? item : item?.dataUrl
+    if (typeof dataUrl !== 'string' || !dataUrl) continue
+    selected.push({ id, dataUrl })
+  }
+  return selected
 }
 
 export function parseDataImageUri(dataUrl) {
@@ -872,7 +941,7 @@ export function normalizeThread(raw, { variant = 'jike', blockIds = [], sourceTe
   return { variant, posts, warnings }
 }
 
-export function normalizeXhs(raw, { blockIds = [], sourceText = '', status = 502, strictCardLength = true } = {}) {
+export function normalizeXhs(raw, { blockIds = [], sourceText = '', status = 502, strictCardLength = true, referenceImageIds = [] } = {}) {
   if (!raw || typeof raw !== 'object') {
     throw fail('小红书格式无效，必须是 JSON 对象。', status)
   }
@@ -1194,6 +1263,11 @@ export function normalizeXhs(raw, { blockIds = [], sourceText = '', status = 502
   if (tweaks) out.tweaks = tweaks
   if (customCss) out.customCss = customCss
   if (designPrompt) out.designPrompt = designPrompt
+  const referencePlan = normalizeXhsReferencePlan(raw.referencePlan, {
+    cards: raw.cards,
+    referenceImageIds,
+  })
+  if (referencePlan) out.referencePlan = referencePlan
   return out
 }
 

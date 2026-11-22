@@ -13,11 +13,13 @@ import {
   findHardcodedBrandColors,
   normalizeThread,
   normalizeXhs,
+  normalizeXhsReferencePlan,
   numberTokens,
   parseSingleXhsCardMarkup,
   parseXhsDeckMarkup,
   sanitizeXhsCardHtml,
   sanitizeXhsCss,
+  selectXhsReferenceImages,
   sourceOverlap,
   threadClipboardText,
   unsupportedFacts,
@@ -34,6 +36,132 @@ test('derive-shared.js 不含任何 node:* 导入以保持浏览器安全', asyn
   assert.deepEqual(THREAD_VARIANTS, ['jike', 'x'])
   assert.deepEqual(MARKDOWN_TARGETS, ['zhihu', 'juejin', 'blog'])
   assert.equal(DERIVE_LIMITS.thread.x.maxWeighted, 270)
+})
+
+test('参考图计划清洗角色、共享图和页面分配', () => {
+  const cards = [{ kind: 'cover' }, { kind: 'steps' }, { kind: 'quote' }]
+  const rawPlan = {
+    images: [
+      { id: 'ref-1', role: 'cover', reason: '封面' },
+      { id: 'ref-2', role: 'content', reason: '步骤' },
+      { id: 'ref-3', role: 'style', reason: '共享风格' },
+      { id: 'ref-99', role: 'content', reason: '未知图片' },
+    ],
+    sharedImageIds: ['ref-3', 'ref-2'],
+    pages: [
+      { page: 1, imageIds: ['ref-1', 'ref-2', 'ref-99'] },
+      { page: 2, imageIds: ['ref-2'] },
+      { page: 3, imageIds: ['ref-2'] },
+      { page: 99, imageIds: ['ref-2'] },
+    ],
+  }
+  const plan = normalizeXhsReferencePlan(rawPlan, {
+    cards,
+    referenceImageIds: ['ref-1', 'ref-2', 'ref-3'],
+  })
+  assert.deepEqual(plan.sharedImageIds, ['ref-3'])
+  assert.deepEqual(plan.pages[0], { page: 1, imageIds: ['ref-1'] })
+  assert.deepEqual(plan.pages[2], { page: 3, imageIds: ['ref-2'] })
+  assert.equal(plan.pages.some(item => item.page === 99), false)
+  assert.equal(plan.images.some(item => item.id === 'ref-99'), false)
+  assert.equal(DERIVE_LIMITS.xhs.referenceImages, 10)
+  assert.equal(DERIVE_LIMITS.xhs.referenceImagesPerCard, 2)
+  assert.equal(DERIVE_LIMITS.xhs.sharedReferenceImages, 1)
+
+  assert.equal(normalizeXhsReferencePlan(null, { cards }), null)
+  assert.equal(normalizeXhsReferencePlan({}, { cards }), null)
+  assert.equal(normalizeXhsReferencePlan({ images: [], sharedImageIds: [], pages: [] }, { cards }), null)
+
+  const constrained = normalizeXhsReferencePlan({
+    images: [
+      { id: 'ref-1', role: 'cover', reason: `封\u0000面${'长'.repeat(130)}` },
+      { id: 'ref-2', role: 'content', reason: '内容' },
+      { id: 'ref-3', role: 'content', reason: '更多内容' },
+      { id: 'ref-4', role: 'style', reason: '风格' },
+    ],
+    sharedImageIds: ['ref-1', 'ref-4'],
+    pages: [
+      { page: 1, imageIds: ['ref-2', 'ref-1', 'ref-1'] },
+      { page: 2, imageIds: ['ref-1', 'ref-2', 'ref-3', 'ref-2'] },
+      { page: 3, imageIds: ['ref-3'] },
+    ],
+  }, { cards })
+  assert.deepEqual(constrained.pages, [
+    { page: 1, imageIds: ['ref-1'] },
+    { page: 2, imageIds: ['ref-2', 'ref-3'] },
+    { page: 3, imageIds: ['ref-3'] },
+  ])
+  assert.deepEqual(constrained.sharedImageIds, ['ref-4'])
+  assert.equal(constrained.images[0].reason.includes('\u0000'), false)
+  assert.equal(constrained.images[0].reason.length, 120)
+
+  const withoutUploadDirectory = normalizeXhsReferencePlan(rawPlan, { cards })
+  assert.deepEqual(withoutUploadDirectory.pages[1], { page: 2, imageIds: ['ref-2'] })
+  assert.equal(normalizeXhsReferencePlan(rawPlan, {
+    cards,
+    referenceImageIds: ['ref-2'],
+  }).images.some(item => item.id === 'ref-1'), false)
+})
+
+test('按页选择参考图按共享优先并支持跨页复用', () => {
+  const refs = [
+    'data:image/png;base64,AA==',
+    'data:image/png;base64,BB==',
+    'data:image/png;base64,CC==',
+  ]
+  const plan = normalizeXhsReferencePlan({
+    images: [
+      { id: 'ref-1', role: 'cover', reason: '封面' },
+      { id: 'ref-2', role: 'content', reason: '步骤' },
+      { id: 'ref-3', role: 'style', reason: '共享风格' },
+    ],
+    sharedImageIds: ['ref-3'],
+    pages: [
+      { page: 1, imageIds: ['ref-1'] },
+      { page: 2, imageIds: ['ref-2'] },
+      { page: 3, imageIds: ['ref-2'] },
+    ],
+  }, { cards: [{ kind: 'cover' }, { kind: 'steps' }, { kind: 'quote' }] })
+  assert.deepEqual(
+    selectXhsReferenceImages(refs, plan, 2).map(item => item.id),
+    ['ref-3', 'ref-2'],
+    '第 3 页复用第 2 页的内容参考，并带共享风格图',
+  )
+  assert.deepEqual(selectXhsReferenceImages(refs, plan, 1), [
+    { id: 'ref-3', dataUrl: refs[2] },
+    { id: 'ref-2', dataUrl: refs[1] },
+  ])
+  assert.deepEqual(selectXhsReferenceImages(refs, plan, 0), [
+    { id: 'ref-3', dataUrl: refs[2] },
+    { id: 'ref-1', dataUrl: refs[0] },
+  ])
+  assert.deepEqual(selectXhsReferenceImages(refs, null, 0), [])
+})
+
+test('参考图计划随 normalizeXhs 保留且不保存图片数据', () => {
+  const normalized = normalizeXhs({
+    title: '参考图计划',
+    body: '这是一段符合字数要求的小红书正文内容，用来验证参考图计划会和整套卡片一起保存。'.repeat(3),
+    tags: ['参考图', '自动分配', '小红书'],
+    cards: [
+      { kind: 'cover', heading: '封面', lines: [], source: [] },
+      { kind: 'steps', heading: '步骤', lines: ['一', '二', '三'], source: [] },
+      { kind: 'quote', heading: '', lines: ['一句金句'], source: [] },
+      { kind: 'list', heading: '清单', lines: ['一', '二'], source: [] },
+      { kind: 'end', heading: '尾页', lines: [], source: [] },
+    ],
+    referencePlan: {
+      images: [{ id: 'ref-1', role: 'cover', reason: '大标题封面', dataUrl: 'data:image/png;base64,AA==' }],
+      sharedImageIds: [],
+      pages: [{ page: 1, imageIds: ['ref-1'] }],
+    },
+  }, { referenceImageIds: ['ref-1'] })
+  assert.deepEqual(normalized.referencePlan, {
+    images: [{ id: 'ref-1', role: 'cover', reason: '大标题封面' }],
+    sharedImageIds: [],
+    pages: [{ page: 1, imageIds: ['ref-1'] }],
+  })
+  assert.equal(JSON.stringify(normalized).includes('data:image'), false)
 })
 
 test('weightedLength 与 charCount 正确计算中英文、URL 与 emoji', () => {
