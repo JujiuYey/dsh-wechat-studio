@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url'
 
 const BUNDLED = join(dirname(fileURLToPath(import.meta.url)), '..', 'skills')
 const SESSION_ID = `dsh-wechat-studio-${randomUUID()}`
-export const SKILL_NAMES = ['writer', 'headline', 'humanizer', 'zhuque', 'banner']
+export const SKILL_NAMES = ['writer', 'headline', 'humanizer', 'zhuque', 'banner', 'repurpose-thread', 'repurpose-xhs']
 export const COVER_SKILL_DIR = join(BUNDLED, 'linyuebanzi-cover-banner')
 export const INLINE_DIAGRAM_SKILL_DIR = join(BUNDLED, 'linyuebanzi-inline-diagram')
 export const SVG_CARDS_SKILL_DIR = join(BUNDLED, 'wechat-svg-cards')
