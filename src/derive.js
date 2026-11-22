@@ -20,6 +20,7 @@ import {
   sanitizeReferenceImages,
   sanitizeXhsCardHtml,
   sanitizeXhsCss,
+  selectXhsReferenceImages,
 } from './derive-shared.js'
 import { feishuImageUrls, markdownImageDestinations } from './markdown-images.js'
 import { readSettings } from './settings.js'
@@ -347,7 +348,26 @@ function parseXhsBatchCardsMarkup(rawText, batchIndices) {
 }
 
 function buildXhsBatchCardsPrompt({ article, prepared, deck, batchIndices }) {
-  const hasRefs = Boolean(prepared.referenceImages?.length)
+  const selectedByCard = batchIndices.map(index => selectXhsReferenceImages(
+    prepared.referenceImages,
+    deck.referencePlan,
+    index,
+  ))
+  const images = []
+  const seenImageIds = new Set()
+  for (const selected of selectedByCard) {
+    for (const image of selected) {
+      if (seenImageIds.has(image.id)) continue
+      seenImageIds.add(image.id)
+      images.push(image)
+    }
+  }
+  const targetCards = batchIndices.map((index, batchIndex) => ({
+    page: index + 1,
+    ...deck.cards[index],
+    referenceImageIds: selectedByCard[batchIndex].map(image => image.id),
+  }))
+  const hasRefs = images.length > 0
   const system = [
     String(prepared.skill ?? '').trim(),
     [
@@ -355,7 +375,7 @@ function buildXhsBatchCardsPrompt({ article, prepared, deck, batchIndices }) {
       `请只为本次指定的 ${batchIndices.length} 页小红书卡片（1080×1440 .xhs-artboard 内部 HTML）设计高设计感、互不重样的自由 HTML 与可选单页 CSS。`,
       '- 每一页的 DOM 排版结构必须贴合该页的 layoutArchetype 与内容语义，绝不套用千篇一律的列表模板，也不要和相邻页使用相同的版式拓扑。',
       hasRefs
-        ? `- 视觉参考图（高优先级，共 ${prepared.referenceImages.length} 张）：请重点模仿随消息附带的参考图的构图比例、排版层级、装饰线条、边框圆角与信息区块组织方式；不要照抄参考图中的文字或品牌名，也不要硬编码主品牌色 Hex（通过 var(--xhs-*) 体现视觉层次）。`
+        ? `- 视觉参考图（高优先级，本批共 ${images.length} 张）：只使用本页 referenceImageIds 指定的参考图，重点模仿其构图比例、排版层级、装饰线条、边框圆角与信息区块组织方式；禁止把其他页面的专属构图复制过来，不要照抄参考图中的文字或品牌名，也不要硬编码主品牌色 Hex（通过 var(--xhs-*) 体现视觉层次）。`
         : '',
       XHS_LAYOUT_RULE,
       '- 色彩正交铁律：所有主色/底色/边框/文字色必须使用 var(--xhs-accent)、var(--xhs-tint)、var(--xhs-accent-line)、var(--xhs-bg)、var(--xhs-card)、var(--xhs-muted-bg)、var(--xhs-dark)、var(--xhs-ink)、var(--xhs-ink2)、var(--xhs-ink3)、var(--xhs-line)，不要硬编码主品牌色 Hex。',
@@ -369,7 +389,7 @@ function buildXhsBatchCardsPrompt({ article, prepared, deck, batchIndices }) {
   const user = JSON.stringify({
     title: String(article?.title ?? ''),
     ...(prepared.designPrompt ? { designPrompt: prepared.designPrompt } : {}),
-    ...(hasRefs ? { referenceImageCount: prepared.referenceImages.length } : {}),
+    ...(hasRefs ? { referenceImageCount: images.length } : {}),
     customCss: deck.customCss || '',
     totalCards: deck.cards.length,
     allCardsOverview: deck.cards.map((c, i) => ({
@@ -379,14 +399,11 @@ function buildXhsBatchCardsPrompt({ article, prepared, deck, batchIndices }) {
       heading: c.heading,
       topology: c.html ? computeDomTopologySignature(c.html) : '',
     })),
-    targetCards: batchIndices.map(i => ({
-      page: i + 1,
-      ...deck.cards[i],
-    })),
+    targetCards,
     ...(prepared.images?.length ? { images: prepared.images } : {}),
     blocks: prepared.blocks,
   })
-  return { system, user }
+  return { system, user, images }
 }
 
 function buildSingleCardRedesignPrompt({ article, blocks, images, deck, cardIndex, cardPrompt = '', referenceImages = [], reason = '', skill = '' }) {
@@ -564,7 +581,7 @@ async function synthesizeStagedXhsHtml(ctx, { article, prepared, deck, onCardRea
       const raw = await callModel(ctx, {
         system: batchPrompt.system,
         user: batchPrompt.user,
-        images: refImages,
+        images: batchPrompt.images,
         onImageFallback,
         task: 'derive-xhs-cards',
         maxTokens: 6144,
@@ -596,6 +613,7 @@ async function synthesizeStagedXhsHtml(ctx, { article, prepared, deck, onCardRea
         await writeChain
       } else {
         try {
+          const cardReferenceImages = selectXhsReferenceImages(refImages, deck.referencePlan, idx)
           const singlePrompt = buildSingleCardRedesignPrompt({
             article,
             blocks: prepared.blocks,
@@ -603,13 +621,13 @@ async function synthesizeStagedXhsHtml(ctx, { article, prepared, deck, onCardRea
             deck: { ...deck, cards: nextCards },
             cardIndex: idx,
             cardPrompt: prepared.designPrompt || '',
-            referenceImages: refImages,
+            referenceImages: cardReferenceImages,
             reason: '批量精绘未返回该页 HTML，请单独精绘本页。',
             skill: prepared.skill,
           })
           const retried = await runSingleCardModelCall(ctx, singlePrompt, {
             maxTokens: 6144,
-            images: refImages,
+            images: cardReferenceImages,
             onImageFallback,
           })
           if (retried?.html) {
@@ -658,6 +676,7 @@ async function synthesizeStagedXhsHtml(ctx, { article, prepared, deck, onCardRea
         `第 ${dup.index + 1} 页与第 ${dup.conflictPage} 页的 DOM 排版拓扑完全重复，且整套卡片内页版式绝不能重样。请彻底更换一种与已有各页都不同的视觉构图（如改用对照表、双栏 Bento、时间轴、指标看板、大号引言卡或规格清单）。`,
         hardcoded.length ? `同时移除硬编码品牌色（${hardcoded.slice(0, 3).join('、')}），改用 var(--xhs-*) 变量。` : '',
       ].filter(Boolean).join(' ')
+      const cardReferenceImages = selectXhsReferenceImages(refImages, deck.referencePlan, dup.index)
       const repairPrompt = buildSingleCardRedesignPrompt({
         article,
         blocks: prepared.blocks,
@@ -665,13 +684,13 @@ async function synthesizeStagedXhsHtml(ctx, { article, prepared, deck, onCardRea
         deck: { ...deck, cards: nextCards },
         cardIndex: dup.index,
         cardPrompt: prepared.designPrompt || '',
-        referenceImages: refImages,
+        referenceImages: cardReferenceImages,
         reason,
         skill: prepared.skill,
       })
       const repaired = await runSingleCardModelCall(ctx, repairPrompt, {
         maxTokens: 6144,
-        images: refImages,
+        images: cardReferenceImages,
         onImageFallback,
       })
       if (!repaired?.html) break
@@ -727,14 +746,14 @@ export async function generateDerivative(ctx, store, {
     dataUrl,
   }))
   let visionFallbackNote = ''
+  let referencePlanFallbackNote = ''
   const onImageFallback = reason => {
     if (!visionFallbackNote && reason) visionFallbackNote = String(reason)
   }
-  const withVisionWarning = list => (
-    visionFallbackNote && !list.includes(visionFallbackNote)
-      ? [visionFallbackNote, ...list]
-      : list
-  )
+  const withVisionWarning = list => {
+    const notes = [visionFallbackNote, referencePlanFallbackNote].filter(Boolean)
+    return [...notes, ...list.filter(item => !notes.includes(item))]
+  }
   const baseUserPayload = JSON.parse(prepared.user)
   const validate = (parsed, { strictCardLength = true } = {}) => (
     platform === 'thread'
@@ -811,6 +830,10 @@ export async function generateDerivative(ctx, store, {
         throw lastError
       }
     }
+  }
+
+  if (platform === 'xhs' && prepared.referenceImages.length && !normalized.referencePlan) {
+    referencePlanFallbackNote = '参考图自动分配未完成，相关页面将按内容自由设计。'
   }
 
   let stage1Persisted = false

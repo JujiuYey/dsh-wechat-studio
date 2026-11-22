@@ -339,7 +339,7 @@ test('extractJson 自动修复模型输出中的未转义双引号、裸换行�
   assert.equal(parsed.html, '<div class="cd-header">测试未转义属性</div>')
 })
 
-test('小红书分阶段自由 HTML/CSS 生成：designPrompt 注入、分批精绘、单页失败回退不丢弃整套、相邻拓扑自动去重', async () => {
+test('小红书分阶段自由 HTML/CSS 生成：按页分发参考图、designPrompt 注入、分批精绘、单页失败回退不丢弃整套、相邻拓扑自动去重', async () => {
   const { store, article } = setupStore()
   await store.update(state => { state.articles.push(article); state.currentId = article.id })
   const [b1, b2] = article.blocks
@@ -357,7 +357,23 @@ test('小红书分阶段自由 HTML/CSS 生成：designPrompt 注入、分批精
     { "kind": "steps", "layoutArchetype": "timeline-steps", "heading": "三步跑通流程", "lines": ["第一步 | 先做最小版本", "第二步 | 收集真实反馈", "第三步 | 固化模板"], "source": ["${b2.id}"] },
     { "kind": "grid", "layoutArchetype": "quad-bento", "heading": "四个核心亮点", "lines": ["亮点一 | 结构稳定", "亮点二 | 配色正交"], "source": ["${b2.id}"] },
     { "kind": "end", "layoutArchetype": "dark-finale", "heading": "点个收藏", "lines": ["欢迎评论区交流"], "source": [] }
-  ]
+  ],
+  "referencePlan": {
+    "images": [
+      { "id": "ref-1", "role": "cover", "reason": "封面主视觉" },
+      { "id": "ref-2", "role": "content", "reason": "对比布局" },
+      { "id": "ref-3", "role": "content", "reason": "步骤布局" },
+      { "id": "ref-4", "role": "content", "reason": "矩阵布局" },
+      { "id": "ref-5", "role": "style", "reason": "共享风格" }
+    ],
+    "sharedImageIds": ["ref-5"],
+    "pages": [
+      { "page": 1, "imageIds": ["ref-1"] },
+      { "page": 2, "imageIds": ["ref-2"] },
+      { "page": 3, "imageIds": ["ref-3", "ref-2"] },
+      { "page": 4, "imageIds": ["ref-4"] }
+    ]
+  }
 }
 </xhs-meta>
 <xhs-style>
@@ -396,7 +412,26 @@ body { display: none; }
     id: article.id,
     platform: 'xhs',
     designPrompt: '杂志画报风，克制留白，强对比排版',
+    referenceImages: Array.from({ length: 5 }, (_, index) => (
+      `data:image/png;base64,${Buffer.from(`reference-${index}`).toString('base64')}`
+    )),
   })
+
+  const imageIdsFrom = call => call.messages[0].content
+    .filter(part => part.type === 'text' && /^\[参考图 ref-/.test(part.text))
+    .map(part => /^\[参考图 (ref-\d+)\]$/.exec(part.text)[1])
+  assert.deepEqual(imageIdsFrom(fake.calls[0]), ['ref-1', 'ref-2', 'ref-3', 'ref-4', 'ref-5'])
+  assert.deepEqual(imageIdsFrom(fake.calls[1]), ['ref-5', 'ref-1', 'ref-2', 'ref-3'])
+  assert.deepEqual(imageIdsFrom(fake.calls[2]), ['ref-5', 'ref-4'])
+  const batch1User = JSON.parse(fake.calls[1].messages[0].content[0].text)
+  assert.deepEqual(batch1User.targetCards[0].referenceImageIds, ['ref-5', 'ref-1'])
+  assert.deepEqual(batch1User.targetCards[1].referenceImageIds, ['ref-5', 'ref-2'])
+  assert.deepEqual(batch1User.targetCards[2].referenceImageIds, ['ref-5', 'ref-3', 'ref-2'], 'ref-2 可跨页复用')
+  const batch2User = JSON.parse(fake.calls[2].messages[0].content[0].text)
+  assert.deepEqual(batch2User.targetCards[1].referenceImageIds, ['ref-5'], '未分配页只携带共享风格图')
+  assert.deepEqual(imageIdsFrom(fake.calls[3]), ['ref-5'], '单页失败重试不广播全部图片')
+  assert.deepEqual(imageIdsFrom(fake.calls[4]), ['ref-5'])
+  assert.deepEqual(imageIdsFrom(fake.calls[5]), ['ref-5', 'ref-3', 'ref-2'], '拓扑去重只携带目标页图片')
 
   // 验证 designPrompt 注入到 Stage 1 请求并保存
   assert.match(fake.calls[0].system, /杂志画报风/)
@@ -412,6 +447,45 @@ body { display: none; }
   const sig2 = computeDomTopologySignature(record.payload.cards[1].html)
   const sig3 = computeDomTopologySignature(record.payload.cards[2].html)
   assert.notEqual(sig2, sig3, '阶段 3 应将相邻同构页定向重设计为不同 DOM 拓扑')
+})
+
+test('无参考图计划时后续调用不带图片、按内容自由设计并追加警告', async () => {
+  const { store, article } = setupStore()
+  await store.update(state => { state.articles.push(article); state.currentId = article.id })
+  const [b1, b2] = article.blocks
+  const stage1 = {
+    title: '无计划自由设计',
+    body: '这是一段符合一百字要求的测试小红书正文内容，重点记录我们在做公众号拆解和最小可用版本验证时的真实心得体会。'.repeat(2),
+    tags: ['实操复盘', '最小版本', '个人经验'],
+    cards: [
+      { kind: 'cover', layoutArchetype: 'hero', heading: '封面', lines: ['先做最小版本'], source: [b1.id] },
+      { kind: 'compare', layoutArchetype: 'compare', heading: '对比', lines: ['以前 | 慢', '现在 | 快'], source: [b1.id] },
+      { kind: 'steps', layoutArchetype: 'steps', heading: '步骤', lines: ['一步 | a', '二步 | b', '三步 | c'], source: [b2.id] },
+      { kind: 'grid', layoutArchetype: 'grid', heading: '矩阵', lines: ['模块一 | 稳', '模块二 | 快'], source: [b2.id] },
+      { kind: 'end', layoutArchetype: 'end', heading: '收尾', lines: ['先收藏'], source: [] },
+    ],
+  }
+  const batch1 = `
+<xhs-card page="1"><div class="p1"><h1>封面</h1><p>最小版本</p></div></xhs-card>
+<xhs-card page="2"><section><table><tbody><tr><td>以前</td><td>现在</td></tr></tbody></table></section></xhs-card>
+<xhs-card page="3"><article><ol><li>一步</li><li>二步</li><li>三步</li></ol></article></xhs-card>`
+  const batch2 = `
+<xhs-card page="4"><div class="p4"><h2>矩阵</h2><div><span>模块一</span><span>模块二</span></div></div></xhs-card>
+<xhs-card page="5"><footer class="p5"><h2>收尾</h2><p>先收藏</p></footer></xhs-card>`
+  const fake = makeFakeCtx([stage1, batch1, batch2])
+  const record = await generateDerivative(fake.ctx, store, {
+    id: article.id,
+    platform: 'xhs',
+    referenceImages: ['data:image/png;base64,AA==', 'data:image/png;base64,BB=='],
+  })
+  assert.equal(fake.calls.length, 3)
+  assert.ok(fake.calls[0].messages[0].content.some(part => part.type === 'image'))
+  for (const call of fake.calls.slice(1)) {
+    assert.equal(call.messages[0].content.some(part => part.type === 'image'), false)
+    const user = JSON.parse(call.messages[0].content[0].text)
+    assert.ok(user.targetCards.every(card => card.referenceImageIds.length === 0))
+  }
+  assert.ok(record.warnings.includes('参考图自动分配未完成，相关页面将按内容自由设计。'))
 })
 
 test('redesignXhsCard 局部写回只替换目标页、保留并发修改的其它页，并在 baseCardHash 冲突时返回 409', async () => {
@@ -762,10 +836,10 @@ test('小红书整套生成与单页重设计支持上传参考图，且纯文�
     id: article.id,
     cardIndex: 1,
     cardPrompt: '模仿参考图构图',
-    referenceImages: [tinyPng],
+    referenceImages: [tinyPng, tinyPng],
   })
   assert.equal(vision.captured.length, 4)
-  assert.ok(vision.captured[3].content.some(p => p.type === 'image' && p.mediaType === 'image/png'))
+  assert.equal(vision.captured[3].content.filter(part => part.type === 'image' && part.mediaType === 'image/png').length, 2)
   assert.match(vision.captured[3].system, /视觉参考图/)
   assert.ok(redesigned.payload.cards[1].html.includes('ref-card'))
 
