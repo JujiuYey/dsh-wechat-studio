@@ -190,6 +190,60 @@ test('normalizeXhs 校验结构、卡片类型顺序、字段必填与事实/金
     })),
     err => err.status === 502 && /第 5 页/.test(err.message),
   )
+
+  // 多处卡片超长一次性合并报错
+  assert.throws(
+    () => normalizeXhs(makeXhs({
+      cards: [
+        { kind: 'cover', heading: '这是一个超过十六字上限的封面标题啦', lines: [], source: [] },
+        { kind: 'quote', heading: '', lines: ['二'], source: [] },
+        { kind: 'list', heading: '清单', lines: ['a', 'b'], source: [] },
+        { kind: 'list', heading: '清单二', lines: ['第一行正常', '第二行刚好二十五个字用来复现一次多点报错的真实情况'], source: [] },
+        { kind: 'end', heading: '尾页', lines: [], source: [] },
+      ],
+    })),
+    err => err.status === 502 && /第 1 页/.test(err.message) && /第 4 页第 2 行/.test(err.message) && err.issues?.length === 2,
+  )
+
+  // strictCardLength: false 对轻微偏长的卡片标题与单行放行并转为提醒告警，硬约束依然拦截
+  const relaxed = normalizeXhs(makeXhs({
+    body: '这是一段四十字左右偏短但高于最低二十字硬门槛的小红书测试正文内容用来测试提醒告警。',
+    cards: [
+      { kind: 'cover', heading: '这是一个超过十六字上限的封面标题啦', lines: [], source: [] },
+      { kind: 'quote', heading: '', lines: ['先做最小可用版本，再收集真实反馈'], source: [] },
+      { kind: 'list', heading: '清单', lines: ['a', '第二行刚好二十五个字用来复现一次单行超限一字情况啦'], source: [] },
+      { kind: 'quote', heading: '', lines: ['先做最小可用版本，再收集真实反馈'], source: [] },
+      { kind: 'end', heading: '尾页', lines: [], source: [] },
+    ],
+  }), { strictCardLength: false })
+  assert.ok(relaxed.warnings.some(w => w.includes('第 1 页卡片标题偏长')))
+  assert.ok(relaxed.warnings.some(w => w.includes('第 3 页第 2 行偏长') && w.includes('25 字')))
+  assert.ok(relaxed.warnings.some(w => w.includes('正文偏短')))
+
+  assert.throws(
+    () => normalizeXhs(makeXhs({ title: '字'.repeat(21) }), { strictCardLength: false }),
+    err => err.status === 502 && /20/.test(err.message),
+  )
+  assert.throws(
+    () => normalizeXhs(makeXhs({
+      cards: [
+        { kind: 'cover', heading: '封面', lines: [], source: [] },
+        { kind: 'quote', heading: '', lines: ['二'], source: [] },
+        { kind: 'list', heading: '清单', lines: ['a', '字'.repeat(61)], source: [] },
+        { kind: 'quote', heading: '', lines: ['四'], source: [] },
+        { kind: 'end', heading: '尾页', lines: [], source: [] },
+      ],
+    }), { strictCardLength: false }),
+    err => err.status === 502 && /60 字硬上限/.test(err.message),
+  )
+})
+
+test('normalizeThread 多条超限时合并报错', () => {
+  const long = '汉'.repeat(141)
+  assert.throws(
+    () => normalizeThread({ posts: [{ text: long }, { text: '正常第二条' }, { text: long }] }, { variant: 'x' }),
+    err => err.status === 502 && /第 1 条/.test(err.message) && /第 3 条/.test(err.message) && err.issues?.length === 2,
+  )
 })
 
 test('threadClipboardText 与 xhsClipboardText 生成规范剪贴板文本', () => {

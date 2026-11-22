@@ -78,10 +78,10 @@ function platformContractSection(platform, variant) {
     `标题（title）：1–${xhs.title} 字，不要带 # 号和换行。`,
     `正文（body）：${xhs.body[0]}–${xhs.body[1]} 字。`,
     `标签（tags）：${xhs.tags[0]}–${xhs.tags[1]} 个字符串，不带 # 号，每个不超过 ${xhs.tagChars} 字。`,
-    `卡片（cards）：${xhs.cards[0]}–${xhs.cards[1]} 页；所有 heading 不超过 ${xhs.heading} 字：`,
-    `- 第 1 页必须是 cover：heading 必填，lines ${xhs.cover.lines[0]}–${xhs.cover.lines[1]} 行，每行 ≤ ${xhs.cover.lineChars} 字。`,
-    `- 中间页只能是 quote 或 list：quote 的 heading 可选、lines ${xhs.quote.lines[0]}–${xhs.quote.lines[1]} 行（每行 ≤ ${xhs.quote.lineChars} 字，优先原句）；list 的 heading 必填、lines ${xhs.list.lines[0]}–${xhs.list.lines[1]} 行（每行 ≤ ${xhs.list.lineChars} 字）。`,
-    `- 最后 1 页可使用 end（不能放在中间，也不能空白）：lines ${xhs.end.lines[0]}–${xhs.end.lines[1]} 行，每行 ≤ ${xhs.end.lineChars} 字。`,
+    `卡片（cards）：${xhs.cards[0]}–${xhs.cards[1]} 页；所有 heading 不超过 ${xhs.heading} 字（建议控制在 12 字以内）：`,
+    `- 第 1 页必须是 cover：heading 必填，lines ${xhs.cover.lines[0]}–${xhs.cover.lines[1]} 行，每行 ≤ ${xhs.cover.lineChars} 字（建议 18 字以内）。`,
+    `- 中间页只能是 quote 或 list：quote 的 heading 可选、lines ${xhs.quote.lines[0]}–${xhs.quote.lines[1]} 行（每行 ≤ ${xhs.quote.lineChars} 字，优先原句）；list 的 heading 必填、lines ${xhs.list.lines[0]}–${xhs.list.lines[1]} 行（每行 ≤ ${xhs.list.lineChars} 字，建议 18–22 字以内）。`,
+    `- 最后 1 页可使用 end（不能放在中间，也不能空白）：lines ${xhs.end.lines[0]}–${xhs.end.lines[1]} 行，每行 ≤ ${xhs.end.lineChars} 字（建议 18 字以内）。`,
     '严格只返回如下 JSON：',
     '{"title":"","body":"","tags":[""],"cards":[{"kind":"cover|quote|list|end","heading":"","lines":[""],"source":["来源段落id"]}]}',
   ].join('\n')
@@ -189,7 +189,7 @@ export async function generateDerivative(ctx, store, { id, platform, variant, co
 
   const prepared = await prepareDerivePrompt(article, { platform, variant, root: dataDir })
   const baseUserPayload = JSON.parse(prepared.user)
-  const validate = parsed => (
+  const validate = (parsed, { strictCardLength = true } = {}) => (
     platform === 'thread'
       ? normalizeThread(parsed, {
         variant: prepared.variant,
@@ -201,15 +201,24 @@ export async function generateDerivative(ctx, store, { id, platform, variant, co
         blockIds: prepared.blockIds,
         sourceText: prepared.sourceText,
         status: 502,
+        strictCardLength,
       })
   )
 
   let normalized = null
   let lastError = null
+  let firstParsed = null
   for (let attempt = 0; attempt < 2; attempt++) {
     const userMessage = attempt === 0
       ? prepared.user
-      : JSON.stringify({ ...baseUserPayload, previousError: lastError.message })
+      : JSON.stringify({
+        ...baseUserPayload,
+        ...(firstParsed ? { previousOutput: firstParsed } : {}),
+        previousError: lastError.message,
+        ...(firstParsed
+          ? { repairInstruction: '请基于 previousOutput 仅修正 previousError 中列出的问题，保留其余已合格的内容不要整体重写，并输出完整合法的 JSON。' }
+          : {}),
+      })
     const raw = await callModel(ctx, {
       system: prepared.system,
       user: userMessage,
@@ -220,11 +229,22 @@ export async function generateDerivative(ctx, store, { id, platform, variant, co
     try {
       const parsed = extractJson(raw)
       if (!parsed) throw fail('模型没有返回可解析的 JSON。', 502)
-      normalized = validate(parsed)
+      if (attempt === 0) firstParsed = parsed
+      normalized = validate(parsed, { strictCardLength: attempt === 0 })
       break
     } catch (err) {
       lastError = err.status ? err : fail(err.message || '模型返回格式不符合要求。', 502)
-      if (attempt === 1) throw lastError
+      if (attempt === 1) {
+        if (platform === 'xhs' && firstParsed) {
+          try {
+            normalized = validate(firstParsed, { strictCardLength: false })
+            break
+          } catch {
+            // 第一轮输出未满足硬约束，抛出第二轮错误
+          }
+        }
+        throw lastError
+      }
     }
   }
 
@@ -267,7 +287,7 @@ export async function updateDerivative(store, { id, platform, payload, root } = 
 
     const normalized = platform === 'thread'
       ? normalizeThread(payload, { variant: existing.variant ?? 'jike', blockIds, sourceText, status: 400 })
-      : normalizeXhs(payload, { blockIds, sourceText, status: 400 })
+      : normalizeXhs(payload, { blockIds, sourceText, status: 400, strictCardLength: false })
 
     const { payload: cleanPayload, warnings } = splitPayloadAndWarnings(normalized)
     existing.payload = cleanPayload

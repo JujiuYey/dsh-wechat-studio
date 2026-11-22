@@ -232,3 +232,63 @@ test('内置 repurpose-thread 与 repurpose-xhs skill 可读取且进入 skillSo
   assert.ok(sources.some(s => s.name === 'repurpose-thread' && s.source === 'bundled'))
   assert.ok(sources.some(s => s.name === 'repurpose-xhs' && s.source === 'bundled'))
 })
+
+test('小红书派生：定向修复重试携带 previousOutput 与全部错误，轻微偏长放行并附提醒', async () => {
+  const { store, article } = setupStore()
+  await store.update(state => { state.articles.push(article); state.currentId = article.id })
+  const [b1, b2] = article.blocks
+
+  const makeXhs = (line25, heading = '核心步骤') => ({
+    title: '增长 1200 人实操',
+    body: '这是一段符合一百字要求的测试小红书正文内容，重点记录我们在做公众号拆解和最小可用版本验证时的真实心得体会。'.repeat(2),
+    tags: ['实操复盘', '最小版本', '个人经验'],
+    cards: [
+      { kind: 'cover', heading: '增长 1200 人复盘', lines: ['先做最小版本'], source: [b1.id] },
+      { kind: 'quote', heading: '核心方法', lines: ['第一段核心结论，增长 1,200 人。'], source: [b1.id] },
+      { kind: 'list', heading, lines: ['第一步先做最小版本', '第二步收集真实反馈'], source: [b2.id] },
+      { kind: 'quote', heading: '', lines: ['第二段具体步骤，先做最小版本再收集反馈。'], source: [b2.id] },
+      { kind: 'list', heading: '避坑清单', lines: ['别等完美再上线', '这一行偏长到二十五个字用来复现第6页第2行超限一字'], source: [b2.id] },
+      { kind: 'end', heading: '点个收藏', lines: [line25], source: [] },
+    ],
+  })
+
+  // 1. 第 1 轮两处偏长，第 2 轮仍有一个 25 字 -> 携带 previousOutput 重试后，放行落盘并带提醒
+  const round1 = makeXhs('刚好二十五个字的一行用来测试第6页第2行偏长情况啦', '十八字卡片标题用来测试同时多点报错')
+  round1.cards[4].lines = ['别等完美再上线', '正常短行']
+  const round2 = {
+    ...round1,
+    cards: round1.cards.map((c, idx) => (idx === 2 ? { ...c, heading: '核心步骤' } : c)),
+  }
+  const fake = makeFakeCtx([round1, round2])
+  const saved = await generateDerivative(fake.ctx, store, { id: article.id, platform: 'xhs' })
+  assert.equal(fake.calls.length, 2)
+  const retryBody = JSON.parse(fake.calls[1].messages[0].content[0].text)
+  assert.ok(retryBody.previousOutput, '重试应附带 previousOutput 供局部修改')
+  assert.ok(retryBody.repairInstruction, '重试应附带局部修复指令')
+  assert.match(retryBody.previousError, /第 3 页卡片标题/)
+  assert.match(retryBody.previousError, /第 6 页第 1 行/)
+  assert.ok(saved.warnings.some(w => w.includes('第 6 页第 1 行偏长') && w.includes('25 字')))
+
+  // 2. 第 1 轮仅单行 25 字偏长，第 2 轮意外返回损坏 JSON -> 回退采用第 1 轮结果并带提醒
+  const onlySoftIssue = makeXhs('短行', '核心步骤')
+  onlySoftIssue.cards[5].lines = ['第一行正常', '刚好二十五个字的一行用来测试第6页第2行偏长情况啦']
+  const fakeFallback = makeFakeCtx([onlySoftIssue, '坏掉的非JSON回复'])
+  const fallbackSaved = await generateDerivative(fakeFallback.ctx, store, {
+    id: article.id,
+    platform: 'xhs',
+    confirmOverwrite: true,
+  })
+  assert.ok(fallbackSaved.warnings.some(w => w.includes('第 6 页第 2 行偏长') && w.includes('25 字')))
+
+  // 3. updateDerivative 允许保存带 25 字卡片行的编辑，仍拦截 25 字笔记标题
+  const updated = await updateDerivative(store, {
+    id: article.id,
+    platform: 'xhs',
+    payload: onlySoftIssue,
+  })
+  assert.ok(updated.warnings.some(w => w.includes('第 6 页第 2 行偏长')))
+  await assert.rejects(
+    () => updateDerivative(store, { id: article.id, platform: 'xhs', payload: { ...onlySoftIssue, title: '字'.repeat(25) } }),
+    err => err.status === 400,
+  )
+})

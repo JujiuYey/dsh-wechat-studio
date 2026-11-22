@@ -25,7 +25,7 @@ export const DERIVE_LIMITS = {
 
 const CONTROL_CHARS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f]/
 const CARD_KINDS = new Set(['cover', 'quote', 'list', 'end'])
-const fail = (message, status = 502) => Object.assign(new Error(message), { status })
+const fail = (message, status = 502, extra = {}) => Object.assign(new Error(message), { status }, extra)
 
 export function charCount(text) {
   return [...String(text ?? '')].length
@@ -124,28 +124,34 @@ export function normalizeThread(raw, { variant = 'jike', blockIds = [], sourceTe
   const validIds = new Set(blockIds)
   const posts = []
   const warnings = []
+  const errors = []
 
   raw.posts.forEach((item, index) => {
     const no = index + 1
     if (!item || typeof item !== 'object' || typeof item.text !== 'string') {
-      throw fail(`第 ${no} 条串推缺少文本内容。`, status)
+      errors.push(`第 ${no} 条串推缺少文本内容`)
+      return
     }
     if (CONTROL_CHARS.test(item.text)) {
-      throw fail(`第 ${no} 条串推包含不允许的控制字符。`, status)
+      errors.push(`第 ${no} 条串推包含不允许的控制字符`)
+      return
     }
     const text = stripThreadPrefix(item.text.replace(/\r\n/g, '\n')).trim()
     if (!text) {
-      throw fail(`第 ${no} 条串推内容为空。`, status)
+      errors.push(`第 ${no} 条串推内容为空`)
+      return
     }
     if (variant === 'x') {
       const len = weightedLength(text)
       if (len > x.maxWeighted) {
-        throw fail(`第 ${no} 条串推超出 X 加权字数上限 ${x.maxWeighted}（当前 ${len}）。`, status)
+        errors.push(`第 ${no} 条串推超出 X 加权字数上限 ${x.maxWeighted}（当前 ${len}）`)
+        return
       }
     } else {
       const len = charCount(text)
       if (len > jike.maxChars) {
-        throw fail(`第 ${no} 条串推超出即刻字数上限 ${jike.maxChars}（当前 ${len}）。`, status)
+        errors.push(`第 ${no} 条串推超出即刻字数上限 ${jike.maxChars}（当前 ${len}）`)
+        return
       }
     }
 
@@ -163,41 +169,76 @@ export function normalizeThread(raw, { variant = 'jike', blockIds = [], sourceTe
     }
   })
 
+  if (errors.length) {
+    throw fail(`${errors.join('；')}。`, status, { issues: errors })
+  }
+
   return { variant, posts, warnings }
 }
 
-export function normalizeXhs(raw, { blockIds = [], sourceText = '', status = 502 } = {}) {
+export function normalizeXhs(raw, { blockIds = [], sourceText = '', status = 502, strictCardLength = true } = {}) {
   if (!raw || typeof raw !== 'object') {
     throw fail('小红书格式无效，必须是 JSON 对象。', status)
   }
   const limits = DERIVE_LIMITS.xhs
 
   if (typeof raw.title !== 'string') throw fail('小红书缺少标题（title）。', status)
-  if (CONTROL_CHARS.test(raw.title)) throw fail('小红书标题包含不允许的控制字符。', status)
-  const title = raw.title.replace(/#/g, '').replace(/[\r\n]+/g, ' ').trim()
-  const titleLen = charCount(title)
-  if (titleLen < 1 || titleLen > limits.title) {
-    throw fail(`小红书标题需为 1–${limits.title} 字（当前 ${titleLen} 字）。`, status)
-  }
-
   if (typeof raw.body !== 'string') throw fail('小红书缺少正文（body）。', status)
-  if (CONTROL_CHARS.test(raw.body)) throw fail('小红书正文包含不允许的控制字符。', status)
-  const body = raw.body.replace(/\r\n/g, '\n').trim()
-  const bodyLen = charCount(body)
-  if (bodyLen < limits.body[0] || bodyLen > limits.body[1]) {
-    throw fail(`小红书正文需为 ${limits.body[0]}–${limits.body[1]} 字（当前 ${bodyLen} 字）。`, status)
+  if (!Array.isArray(raw.tags)) throw fail('小红书标签（tags）必须是字符串数组。', status)
+  if (!Array.isArray(raw.cards)) throw fail('小红书卡片（cards）必须是数组。', status)
+  if (raw.cards.length < limits.cards[0] || raw.cards.length > limits.cards[1]) {
+    throw fail(`小红书卡片需为 ${limits.cards[0]}–${limits.cards[1]} 页（当前 ${raw.cards.length} 页）。`, status)
   }
 
-  if (!Array.isArray(raw.tags)) throw fail('小红书标签（tags）必须是字符串数组。', status)
+  const errors = []
+  const warnings = []
+
+  let title = ''
+  if (CONTROL_CHARS.test(raw.title)) {
+    errors.push('小红书标题包含不允许的控制字符')
+  } else {
+    title = raw.title.replace(/#/g, '').replace(/[\r\n]+/g, ' ').trim()
+    const titleLen = charCount(title)
+    if (titleLen < 1 || titleLen > limits.title) {
+      errors.push(`小红书标题需为 1–${limits.title} 字（当前 ${titleLen} 字）`)
+    }
+  }
+
+  let body = ''
+  if (CONTROL_CHARS.test(raw.body)) {
+    errors.push('小红书正文包含不允许的控制字符')
+  } else {
+    body = raw.body.replace(/\r\n/g, '\n').trim()
+    const bodyLen = charCount(body)
+    if (bodyLen > limits.body[1]) {
+      errors.push(`小红书正文超出 ${limits.body[1]} 字上限（当前 ${bodyLen} 字）`)
+    } else if (bodyLen < 20) {
+      errors.push(`小红书正文过短，至少需要 20 字（当前 ${bodyLen} 字）`)
+    } else if (bodyLen < limits.body[0]) {
+      if (strictCardLength) {
+        errors.push(`小红书正文需为 ${limits.body[0]}–${limits.body[1]} 字（当前 ${bodyLen} 字）`)
+      } else {
+        warnings.push(`正文偏短（${bodyLen} 字，建议 ${limits.body[0]}–${limits.body[1]} 字）`)
+      }
+    }
+  }
+
   const tags = []
   const seenTags = new Set()
   raw.tags.forEach((rawTag, index) => {
-    if (typeof rawTag !== 'string') throw fail(`第 ${index + 1} 个标签必须是文本。`, status)
-    if (CONTROL_CHARS.test(rawTag)) throw fail(`第 ${index + 1} 个标签包含不允许的控制字符。`, status)
+    if (typeof rawTag !== 'string') {
+      errors.push(`第 ${index + 1} 个标签必须是文本`)
+      return
+    }
+    if (CONTROL_CHARS.test(rawTag)) {
+      errors.push(`第 ${index + 1} 个标签包含不允许的控制字符`)
+      return
+    }
     const tag = rawTag.replace(/[#\s]+/g, '')
     if (!tag) return
     if (charCount(tag) > limits.tagChars) {
-      throw fail(`标签「${tag}」超出 ${limits.tagChars} 字上限（当前 ${charCount(tag)} 字）。`, status)
+      errors.push(`标签「${tag}」超出 ${limits.tagChars} 字上限（当前 ${charCount(tag)} 字）`)
+      return
     }
     if (!seenTags.has(tag)) {
       seenTags.add(tag)
@@ -205,19 +246,13 @@ export function normalizeXhs(raw, { blockIds = [], sourceText = '', status = 502
     }
   })
   if (tags.length < limits.tags[0] || tags.length > limits.tags[1]) {
-    throw fail(`小红书标签需为 ${limits.tags[0]}–${limits.tags[1]} 个（当前 ${tags.length} 个）。`, status)
-  }
-
-  if (!Array.isArray(raw.cards)) throw fail('小红书卡片（cards）必须是数组。', status)
-  if (raw.cards.length < limits.cards[0] || raw.cards.length > limits.cards[1]) {
-    throw fail(`小红书卡片需为 ${limits.cards[0]}–${limits.cards[1]} 页（当前 ${raw.cards.length} 页）。`, status)
+    errors.push(`小红书标签需为 ${limits.tags[0]}–${limits.tags[1]} 个（当前 ${tags.length} 个）`)
   }
 
   const validIds = new Set(blockIds)
   const cards = []
-  const warnings = []
 
-  if (sourceText) {
+  if (sourceText && title && body) {
     const bodyFacts = unsupportedFacts(`${title}\n${body}`, sourceText)
     if (bodyFacts.length) {
       warnings.push(`标题或正文出现原文没有的数字：${bodyFacts.join('、')}`)
@@ -227,61 +262,89 @@ export function normalizeXhs(raw, { blockIds = [], sourceText = '', status = 502
   raw.cards.forEach((item, index) => {
     const page = index + 1
     if (!item || typeof item !== 'object') {
-      throw fail(`第 ${page} 页卡片格式无效。`, status)
+      errors.push(`第 ${page} 页卡片格式无效`)
+      return
     }
     const kind = item.kind
     if (!CARD_KINDS.has(kind)) {
-      throw fail(`第 ${page} 页卡片类型无效：${String(kind)}。`, status)
+      errors.push(`第 ${page} 页卡片类型无效：${String(kind)}`)
+      return
     }
     if (index === 0 && kind !== 'cover') {
-      throw fail('第 1 页卡片类型必须是 cover。', status)
+      errors.push('第 1 页卡片类型必须是 cover')
     }
     if (index > 0 && kind === 'cover') {
-      throw fail(`第 ${page} 页不能使用 cover，封面只能放在第 1 页。`, status)
+      errors.push(`第 ${page} 页不能使用 cover，封面只能放在第 1 页`)
     }
     if (kind === 'end' && index !== raw.cards.length - 1) {
-      throw fail(`第 ${page} 页不能使用 end，尾页卡只能放在最后 1 页。`, status)
+      errors.push(`第 ${page} 页不能使用 end，尾页卡只能放在最后 1 页`)
     }
 
+    let heading = ''
     if (item.heading != null && typeof item.heading !== 'string') {
-      throw fail(`第 ${page} 页卡片标题必须是文本。`, status)
-    }
-    if (typeof item.heading === 'string' && CONTROL_CHARS.test(item.heading)) {
-      throw fail(`第 ${page} 页卡片标题包含不允许的控制字符。`, status)
-    }
-    const heading = String(item.heading ?? '').replace(/[\r\n]+/g, ' ').trim()
-    if (charCount(heading) > limits.heading) {
-      throw fail(`第 ${page} 页卡片标题超出 ${limits.heading} 字上限（当前 ${charCount(heading)} 字）。`, status)
-    }
-
-    if (item.lines != null && !Array.isArray(item.lines)) {
-      throw fail(`第 ${page} 页卡片条目（lines）必须是字符串数组。`, status)
-    }
-    const lines = []
-    for (const rawLine of item.lines ?? []) {
-      if (typeof rawLine !== 'string') throw fail(`第 ${page} 页卡片条目必须全部是文本。`, status)
-      if (CONTROL_CHARS.test(rawLine)) throw fail(`第 ${page} 页卡片条目包含不允许的控制字符。`, status)
-      const cleaned = rawLine.replace(/[\r\n]+/g, ' ').trim()
-      if (cleaned) lines.push(cleaned)
-    }
-
-    if ((kind === 'cover' || kind === 'list') && !heading) {
-      throw fail(`第 ${page} 页（${kind}）必须填写卡片标题。`, status)
-    }
-    if (kind === 'end' && !heading && lines.length === 0) {
-      throw fail(`第 ${page} 页（end）不能是空白尾页，请填写标题或至少一行内容。`, status)
-    }
-
-    const spec = limits[kind]
-    if (lines.length < spec.lines[0] || lines.length > spec.lines[1]) {
-      throw fail(`第 ${page} 页（${kind}）正文行数需为 ${spec.lines[0]}–${spec.lines[1]} 行（当前 ${lines.length} 行）。`, status)
-    }
-    lines.forEach((line, lineIdx) => {
-      const len = charCount(line)
-      if (len > spec.lineChars) {
-        throw fail(`第 ${page} 页第 ${lineIdx + 1} 行超出 ${spec.lineChars} 字上限（当前 ${len} 字）。`, status)
+      errors.push(`第 ${page} 页卡片标题必须是文本`)
+    } else if (typeof item.heading === 'string' && CONTROL_CHARS.test(item.heading)) {
+      errors.push(`第 ${page} 页卡片标题包含不允许的控制字符`)
+    } else {
+      heading = String(item.heading ?? '').replace(/[\r\n]+/g, ' ').trim()
+      const headLen = charCount(heading)
+      const hardHeadMax = limits.heading * 2
+      if (headLen > hardHeadMax) {
+        errors.push(`第 ${page} 页卡片标题超出 ${hardHeadMax} 字硬上限（当前 ${headLen} 字）`)
+      } else if (headLen > limits.heading) {
+        if (strictCardLength) {
+          errors.push(`第 ${page} 页卡片标题超出 ${limits.heading} 字上限（当前 ${headLen} 字）`)
+        } else {
+          warnings.push(`第 ${page} 页卡片标题偏长（${headLen} 字，建议 ≤ ${limits.heading} 字），可在右侧精简`)
+        }
       }
-    })
+      if ((kind === 'cover' || kind === 'list') && !heading) {
+        errors.push(`第 ${page} 页（${kind}）必须填写卡片标题`)
+      }
+    }
+
+    const lines = []
+    if (item.lines != null && !Array.isArray(item.lines)) {
+      errors.push(`第 ${page} 页卡片条目（lines）必须是字符串数组`)
+    } else {
+      let lineTypeOk = true
+      for (const rawLine of item.lines ?? []) {
+        if (typeof rawLine !== 'string') {
+          errors.push(`第 ${page} 页卡片条目必须全部是文本`)
+          lineTypeOk = false
+          break
+        }
+        if (CONTROL_CHARS.test(rawLine)) {
+          errors.push(`第 ${page} 页卡片条目包含不允许的控制字符`)
+          lineTypeOk = false
+          break
+        }
+        const cleaned = rawLine.replace(/[\r\n]+/g, ' ').trim()
+        if (cleaned) lines.push(cleaned)
+      }
+      if (lineTypeOk) {
+        if (kind === 'end' && !heading && lines.length === 0) {
+          errors.push(`第 ${page} 页（end）不能是空白尾页，请填写标题或至少一行内容`)
+        }
+        const spec = limits[kind]
+        if (lines.length < spec.lines[0] || lines.length > spec.lines[1]) {
+          errors.push(`第 ${page} 页（${kind}）正文行数需为 ${spec.lines[0]}–${spec.lines[1]} 行（当前 ${lines.length} 行）`)
+        }
+        const hardLineMax = Math.max(spec.lineChars * 2, 60)
+        lines.forEach((line, lineIdx) => {
+          const len = charCount(line)
+          if (len > hardLineMax) {
+            errors.push(`第 ${page} 页第 ${lineIdx + 1} 行超出 ${hardLineMax} 字硬上限（当前 ${len} 字）`)
+          } else if (len > spec.lineChars) {
+            if (strictCardLength) {
+              errors.push(`第 ${page} 页第 ${lineIdx + 1} 行超出 ${spec.lineChars} 字上限（当前 ${len} 字）`)
+            } else {
+              warnings.push(`第 ${page} 页第 ${lineIdx + 1} 行偏长（${len} 字，建议 ≤ ${spec.lineChars} 字），可在右侧精简`)
+            }
+          }
+        })
+      }
+    }
 
     const source = filterSourceIds(item.source, validIds)
     cards.push({ kind, heading, lines, source })
@@ -296,6 +359,10 @@ export function normalizeXhs(raw, { blockIds = [], sourceText = '', status = 502
       }
     }
   })
+
+  if (errors.length) {
+    throw fail(`${errors.join('；')}。`, status, { issues: errors })
+  }
 
   return { title, body, tags, cards, warnings }
 }
