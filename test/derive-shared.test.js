@@ -10,6 +10,7 @@ import {
   cardContentVersion,
   charCount,
   computeDomTopologySignature,
+  enforceXhsDarkSurfaceContrast,
   findHardcodedBrandColors,
   normalizeThread,
   normalizeXhs,
@@ -162,6 +163,19 @@ test('参考图计划随 normalizeXhs 保留且不保存图片数据', () => {
     pages: [{ page: 1, imageIds: ['ref-1'] }],
   })
   assert.equal(JSON.stringify(normalized).includes('data:image'), false)
+})
+
+test('深色区域自动补充浅色文字规则且重复归一化不叠加', () => {
+  const css = sanitizeXhsCss('.dark-panel { background: var(--xhs-dark); color: var(--xhs-ink); }')
+  const once = enforceXhsDarkSurfaceContrast('', css)
+  assert.match(once, /\.xhs-artboard \.dark-panel \*/)
+  assert.match(once, /color:\s*#FFFFFF\s*!important/)
+  const twice = enforceXhsDarkSurfaceContrast('', once)
+  assert.equal(twice, once)
+
+  const inline = enforceXhsDarkSurfaceContrast('<div style="background: var(--xhs-dark)"><p>正文</p></div>', '')
+  assert.match(inline, /\[style\*="var\(--xhs-dark\)"\]/)
+  assert.match(inline, /#FFFFFF\s*!important/)
 })
 
 test('weightedLength 与 charCount 正确计算中英文、URL 与 emoji', () => {

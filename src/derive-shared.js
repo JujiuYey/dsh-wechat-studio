@@ -25,7 +25,7 @@ export const DERIVE_LIMITS = {
     cardTags: [0, 4],
     cardTagChars: 12,
     cardHtml: 6000,
-    pageCss: 2000,
+    pageCss: 4000,
     customCss: 4000,
     totalDeckMarkup: 48000,
     designPrompt: 400,
@@ -941,6 +941,31 @@ export function normalizeThread(raw, { variant = 'jike', blockIds = [], sourceTe
   return { variant, posts, warnings }
 }
 
+export function enforceXhsDarkSurfaceContrast(html, css) {
+  const source = String(css || '').trim()
+  const additions = []
+  const seen = new Set()
+  const addContrastRule = selectorText => {
+    for (const part of String(selectorText || '').split(',')) {
+      const selector = part.trim()
+      if (!selector || seen.has(selector)) continue
+      seen.add(selector)
+      const rule = `${selector}, ${selector} * { color: #FFFFFF !important; }`
+      if (!source.includes(rule)) additions.push(rule)
+    }
+  }
+
+  if (/background(?:-color)?\s*:\s*var\(--xhs-dark\)/i.test(String(html || ''))) {
+    addContrastRule('.xhs-artboard [style*="var(--xhs-dark)"]')
+  }
+  for (const match of source.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    if (/background(?:-color)?\s*:\s*var\(--xhs-dark\)/i.test(match[2])) {
+      addContrastRule(match[1])
+    }
+  }
+  return [source, ...additions].filter(Boolean).join('\n')
+}
+
 export function normalizeXhs(raw, { blockIds = [], sourceText = '', status = 502, strictCardLength = true, referenceImageIds = [] } = {}) {
   if (!raw || typeof raw !== 'object') {
     throw fail('小红书格式无效，必须是 JSON 对象。', status)
@@ -1117,7 +1142,7 @@ export function normalizeXhs(raw, { blockIds = [], sourceText = '', status = 502
     const imageUrl = sanitizeCardImageUrl(item.imageUrl)
     const imageFraming = normalizeCardImageFraming(item.imageFraming)
     const html = sanitizeXhsCardHtml(item.html)
-    const pageCss = sanitizeXhsCss(item.pageCss, { maxChars: limits.pageCss })
+    const pageCss = enforceXhsDarkSurfaceContrast(html, sanitizeXhsCss(item.pageCss, { maxChars: limits.pageCss }))
     const layoutArchetype = typeof item.layoutArchetype === 'string'
       ? item.layoutArchetype.replace(/[^a-z0-9_-]/gi, '').slice(0, 32)
       : ''
@@ -1219,7 +1244,7 @@ export function normalizeXhs(raw, { blockIds = [], sourceText = '', status = 502
     throw fail(`${errors.join('；')}。`, status, { issues: errors })
   }
 
-  const customCss = sanitizeXhsCss(raw.customCss, { maxChars: limits.customCss })
+  const customCss = enforceXhsDarkSurfaceContrast('', sanitizeXhsCss(raw.customCss, { maxChars: limits.customCss }))
   const designPrompt = typeof raw.designPrompt === 'string'
     ? raw.designPrompt.replace(CONTROL_CHARS, '').replace(/[\r\n]+/g, ' ').trim().slice(0, limits.designPrompt)
     : ''

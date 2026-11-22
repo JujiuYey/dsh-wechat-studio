@@ -27,6 +27,7 @@ import { readSettings } from './settings.js'
 import { readStyleState } from './writing-style.js'
 
 const MAX_DERIVE_INPUT_CHARS = 30_000
+const XHS_SINGLE_CARD_TIMEOUT_MS = 240_000
 const fail = (message, status = 400, extra = {}) => Object.assign(new Error(message), { status }, extra)
 
 export function extractArticleImages(article) {
@@ -286,6 +287,12 @@ const XHS_LAYOUT_RULE = [
   '- 1080×1440 强制字号与无单位行高规范：严禁使用 12px–16px 的网页小字！主标题 .cd-title 52px–66px（line-height: 1.2），区块小标题 strong 26px–34px（line-height: 1.3），正文/步骤/表格说明 p 22px–25px（line-height: 1.45），角标/代码/胶囊标签 18px–21px（line-height: 1.35）。所有行高必须使用无单位倍数（如 1.45），严禁写过小的固定 px 行高导致换行重叠；深色底区块（background: var(--xhs-dark)）内部所有文字必须显式设为浅色（#FFFFFF 或 rgba(255,255,255,0.86)），严禁白底白字或深底黑字。',
 ].join('\n')
 
+function sanitizeModelPageCss(rawCss) {
+  const clean = sanitizeXhsCss(rawCss, { maxChars: DERIVE_LIMITS.xhs.pageCss })
+  const complete = sanitizeXhsCss(rawCss, { maxChars: Infinity })
+  return clean.length === complete.length ? clean : null
+}
+
 function parseXhsBatchCardsMarkup(rawText, batchIndices) {
   const source = String(rawText ?? '').replace(/<think\b[^>]*>[\s\S]*?<\/think>/gi, '').trim()
   const pageStyleByIndex = new Map()
@@ -332,9 +339,11 @@ function parseXhsBatchCardsMarkup(rawText, batchIndices) {
       const cleanHtml = sanitizeXhsCardHtml(rawCardHtml)
       if (cleanHtml) {
         const mergedCss = [pageStyleByIndex.get(targetIdx) || '', ...nestedStyles].filter(Boolean).join('\n')
-        const cleanPageCss = sanitizeXhsCss(mergedCss, {
-          maxChars: DERIVE_LIMITS.xhs.pageCss,
-        })
+        const cleanPageCss = sanitizeModelPageCss(mergedCss)
+        if (cleanPageCss === null) {
+          order++
+          continue
+        }
         results.set(targetIdx, {
           html: cleanHtml,
           pageCss: cleanPageCss,
@@ -347,7 +356,7 @@ function parseXhsBatchCardsMarkup(rawText, batchIndices) {
   return results
 }
 
-function buildXhsBatchCardsPrompt({ article, prepared, deck, batchIndices }) {
+function buildXhsBatchCardsPrompt({ article, prepared, deck, batchIndices, userInstruction = '' }) {
   const selectedByCard = batchIndices.map(index => selectXhsReferenceImages(
     prepared.referenceImages,
     deck.referencePlan,
@@ -373,12 +382,13 @@ function buildXhsBatchCardsPrompt({ article, prepared, deck, batchIndices }) {
     [
       '# 阶段 2：分批自由 HTML/CSS 精绘任务',
       `请只为本次指定的 ${batchIndices.length} 页小红书卡片（1080×1440 .xhs-artboard 内部 HTML）设计高设计感、互不重样的自由 HTML 与可选单页 CSS。`,
+      userInstruction ? `- 用户对本次目标页的明确想法（最高优先级）：${userInstruction}` : '',
       '- 每一页的 DOM 排版结构必须贴合该页的 layoutArchetype 与内容语义，绝不套用千篇一律的列表模板，也不要和相邻页使用相同的版式拓扑。',
       hasRefs
-        ? `- 视觉参考图（高优先级，本批共 ${images.length} 张）：只使用本页 referenceImageIds 指定的参考图，重点模仿其构图比例、排版层级、装饰线条、边框圆角与信息区块组织方式；禁止把其他页面的专属构图复制过来，不要照抄参考图中的文字或品牌名，也不要硬编码主品牌色 Hex（通过 var(--xhs-*) 体现视觉层次）。`
+        ? `- 视觉参考图（高优先级，本批共 ${images.length} 张）：只使用本页 referenceImageIds 指定的参考图，优先还原其构图比例、排版层级、装饰线条、边框圆角与信息区块组织方式，再处理页面差异化，不得为了差异化牺牲参考图的关键视觉结构。若参考图为单列纵向布局，禁止改成左右分栏；主要区域的上下顺序和层级关系必须保持一致，不得新增或删除主要区域。具体装饰图标必须使用内联 SVG/CSS 还原同类造型，不得用 emoji 或普通文本字符随意替代；禁止把其他页面的专属构图复制过来，不要照抄参考图中的文字或品牌名。`
         : '',
       XHS_LAYOUT_RULE,
-      '- 色彩正交铁律：所有主色/底色/边框/文字色必须使用 var(--xhs-accent)、var(--xhs-tint)、var(--xhs-accent-line)、var(--xhs-bg)、var(--xhs-card)、var(--xhs-muted-bg)、var(--xhs-dark)、var(--xhs-ink)、var(--xhs-ink2)、var(--xhs-ink3)、var(--xhs-line)，不要硬编码主品牌色 Hex。',
+      '- 色彩正交铁律：品牌主色必须使用 var(--xhs-accent)、var(--xhs-tint)、var(--xhs-accent-line) 等主题变量。优先保持参考图的明暗关系与中性色（黑/白/灰），参考图中本身为黑/白/灰的框体不要改写成 var(--xhs-dark) 或其他主题色；小面积多彩装饰图标可用独立的 --ref-* CSS 变量还原参考色，不要强行映射成品牌主色。',
       `- 单页 <xhs-card page="N"> 内部 HTML ≤ ${DERIVE_LIMITS.xhs.cardHtml} 字符，可选 <xhs-page-style page="N"> ≤ ${DERIVE_LIMITS.xhs.pageCss} 字符。`,
       '- 禁止 <script>、<style>、<iframe>、on* 事件属性、@import、外部 url(...) 与 position: fixed。',
       '- 只用原文 blocks 与卡片字段中的真实事实，不编造新数字。',
@@ -427,13 +437,13 @@ function buildSingleCardRedesignPrompt({ article, blocks, images, deck, cardInde
       `你需要重新设计第 ${cardIndex + 1} / ${deck.cards.length} 页小红书卡片（1080×1440 .xhs-artboard 内部 HTML）。`,
       cardPrompt ? `用户对这一页的明确想法（高优先级）：${cardPrompt}` : '',
       cleanRefImages.length
-        ? `用户附带了 ${cleanRefImages.length} 张本页视觉参考图（高优先级）：请重点模仿参考图的构图骨架、排版层级、留白节奏与装饰元素来重构这一页；严禁照抄参考图中的文字、数字或无关品牌信息，且品牌主色/底色仍须使用 var(--xhs-*) 变量以保持换肤正交。`
+        ? `用户附带了 ${cleanRefImages.length} 张本页视觉参考图（高优先级）：优先还原参考图的构图骨架、排版层级、留白节奏与装饰元素，再处理页面差异化。若参考图为单列纵向布局，禁止改成左右分栏；主要区域的上下顺序和层级关系必须保持一致，不得新增或删除主要区域。具体装饰图标必须使用内联 SVG/CSS 还原同类造型，不得用 emoji 或普通文本字符随意替代；严禁照抄参考图中的文字、数字或无关品牌信息。`
         : '',
       reason ? `系统质检触发的重设计原因：${reason}` : '',
       forbiddenTopologies.length
         ? `禁止与整套卡片中任意其他页的 DOM 排版拓扑重复（已有页面拓扑摘要：${forbiddenTopologies.join(' ; ')}），必须换一种截然不同的视觉版式结构。`
         : '',
-      '- 色彩正交铁律：所有品牌主色与表面色必须使用 var(--xhs-*) CSS 变量，禁止硬编码主品牌色 Hex，确保切换配色主题立即生效。',
+      '- 色彩正交铁律：品牌主色必须使用 var(--xhs-*) CSS 变量。优先保持参考图的明暗关系与中性色（黑/白/灰），参考图中本身为黑/白/灰的框体不要改写成 var(--xhs-dark) 或其他主题色；小面积多彩装饰图标可用独立的 --ref-* CSS 变量还原参考色。',
       XHS_LAYOUT_RULE,
       '只使用母稿 blocks 与当前页已有的真实信息，不编造新数字或外部 URL。',
       `- 输出格式：可选 <xhs-page-style page="${cardIndex + 1}">（≤ ${DERIVE_LIMITS.xhs.pageCss} 字符）+ 必填 <xhs-card page="${cardIndex + 1}" kind="${targetCard.kind}">（≤ ${DERIVE_LIMITS.xhs.cardHtml} 字符）。不要包裹外层 .xhs-artboard，不要输出 <script>/<iframe>/on*。`,
@@ -476,11 +486,12 @@ function parseSingleCardModelOutput(raw) {
   const fromMarkup = parseSingleXhsCardMarkup(stripped)
   if (fromMarkup?.html) {
     const cleanHtml = sanitizeXhsCardHtml(fromMarkup.html)
-    if (cleanHtml && !looksLikeTruncatedHtml(cleanHtml)) {
+    const pageCss = sanitizeModelPageCss(fromMarkup.pageCss || '')
+    if (cleanHtml && !looksLikeTruncatedHtml(cleanHtml) && pageCss !== null) {
       return {
         ...fromMarkup,
         html: cleanHtml,
-        pageCss: sanitizeXhsCss(fromMarkup.pageCss || '', { maxChars: DERIVE_LIMITS.xhs.pageCss }),
+        pageCss,
       }
     }
   }
@@ -491,11 +502,12 @@ function parseSingleCardModelOutput(raw) {
   const fromJson = extractJson(stripped)
   if (fromJson && typeof fromJson === 'object' && typeof fromJson.html === 'string') {
     const cleanHtml = sanitizeXhsCardHtml(fromJson.html)
-    if (cleanHtml && !looksLikeTruncatedHtml(cleanHtml)) {
+    const pageCss = sanitizeModelPageCss(fromJson.pageCss || '')
+    if (cleanHtml && !looksLikeTruncatedHtml(cleanHtml) && pageCss !== null) {
       return {
         ...fromJson,
         html: cleanHtml,
-        pageCss: sanitizeXhsCss(fromJson.pageCss || '', { maxChars: DERIVE_LIMITS.xhs.pageCss }),
+        pageCss,
       }
     }
   }
@@ -507,10 +519,11 @@ function parseSingleCardModelOutput(raw) {
       ...[...fencedHtml.matchAll(/<style\b[^>]*>([\s\S]*?)<\/style>/gi)].map(m => m[1]?.trim()),
     ].filter(Boolean)
     const cleanHtml = sanitizeXhsCardHtml(fencedHtml)
-    if (cleanHtml && !looksLikeTruncatedHtml(cleanHtml)) {
+    const pageCss = sanitizeModelPageCss(extractedStyles.join('\n'))
+    if (cleanHtml && !looksLikeTruncatedHtml(cleanHtml) && pageCss !== null) {
       return {
         html: cleanHtml,
-        pageCss: sanitizeXhsCss(extractedStyles.join('\n'), { maxChars: DERIVE_LIMITS.xhs.pageCss }),
+        pageCss,
       }
     }
   }
@@ -523,17 +536,26 @@ async function runSingleCardModelCall(ctx, prompt, { maxTokens = 6144, images = 
       ? prompt.user
       : JSON.stringify({
         ...JSON.parse(prompt.user),
-        repairInstruction: '上一轮输出被截断或未能提取到完整闭合的 <xhs-card> HTML。请保持单页 CSS 精简（≤ 1500 字符），严格按顺序输出 <xhs-page-style>...</xhs-page-style>（可选）与完整闭合的 <xhs-card>...</xhs-card>，不要把 CSS 写进卡片正文。',
+        repairInstruction: `上一轮输出不完整、超出 CSS 预算或未能提取到完整闭合的 <xhs-card> HTML。请保持单页 CSS ≤ ${DERIVE_LIMITS.xhs.pageCss} 字符，优先保留布局、窗口列表和图标尺寸等关键规则，严格按顺序输出 <xhs-page-style>...</xhs-page-style>（可选）与完整闭合的 <xhs-card>...</xhs-card>，不要把 CSS 写进卡片正文。`,
       })
-    const raw = await callModel(ctx, {
-      system: prompt.system,
-      user: userMessage,
-      images,
-      onImageFallback,
-      task: 'derive-xhs-card',
-      maxTokens,
-      signal: AbortSignal.timeout(90_000),
-    })
+    const signal = AbortSignal.timeout(XHS_SINGLE_CARD_TIMEOUT_MS)
+    let raw
+    try {
+      raw = await callModel(ctx, {
+        system: prompt.system,
+        user: userMessage,
+        images,
+        onImageFallback,
+        task: 'derive-xhs-card',
+        maxTokens,
+        signal,
+      })
+    } catch (err) {
+      if (signal.aborted) {
+        throw fail(`单页卡片生成超过 ${XHS_SINGLE_CARD_TIMEOUT_MS / 1000} 秒仍未完成，已停止本次请求。请重试，或切换响应更快的模型。`, 504)
+      }
+      throw err
+    }
     const parsed = parseSingleCardModelOutput(raw)
     if (parsed?.html) return parsed
   }
@@ -1015,20 +1037,37 @@ export async function redesignXhsCard(ctx, store, { id, cardIndex, cardPrompt = 
     if (!visionFallbackNote && reason) visionFallbackNote = String(reason)
   }
 
-  const prompt = buildSingleCardRedesignPrompt({
+  const referencePlan = cleanRefImages.length
+    ? {
+      images: cleanRefImages.map((_, index) => ({
+        id: `ref-${index + 1}`,
+        role: targetCard.kind === 'cover' ? 'cover' : 'content',
+        reason: '用户指定用于本页重设计的参考图',
+      })),
+      sharedImageIds: [],
+      pages: [{
+        page: cardIndex + 1,
+        imageIds: cleanRefImages.map((_, index) => `ref-${index + 1}`),
+      }],
+    }
+    : null
+  const prompt = buildXhsBatchCardsPrompt({
     article,
-    blocks: trimmedBlocks,
-    images,
-    deck: existing.payload,
-    cardIndex,
-    cardPrompt: cleanCardPrompt,
-    referenceImages: cleanRefImages,
-    skill,
+    prepared: {
+      skill,
+      blocks: trimmedBlocks,
+      images,
+      designPrompt: existing.payload.designPrompt || '',
+      referenceImages: cleanRefImages,
+    },
+    deck: { ...existing.payload, referencePlan },
+    batchIndices: [cardIndex],
+    userInstruction: cleanCardPrompt,
   })
 
   const redesigned = await runSingleCardModelCall(ctx, prompt, {
     maxTokens: 6144,
-    images: cleanRefImages,
+    images: prompt.images,
     onImageFallback,
   })
   if (!redesigned?.html) {

@@ -547,6 +547,126 @@ test('redesignXhsCard 局部写回只替换目标页、保留并发修改的其�
   )
 })
 
+test('手动单页重设计复用批量精绘参考逻辑并修复深色文字对比度', async () => {
+  const tinyPng = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=='
+  const tinyJpeg = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAA=='
+  const { store, article } = setupStore()
+  await store.update(state => { state.articles.push(article); state.currentId = article.id })
+  const [b1, b2] = article.blocks
+  const initialXhs = {
+    title: '单页参考对齐测试',
+    body: '这是一段符合一百字要求的测试小红书正文内容，重点记录我们在做公众号拆解和最小可用版本验证时的真实心得体会。'.repeat(2),
+    tags: ['实操复盘', '最小版本', '个人经验'],
+    cards: [
+      { kind: 'cover', heading: '封面', lines: ['先做最小版本'], source: [b1.id] },
+      { kind: 'compare', heading: '对比', lines: ['以前 | 手动', '现在 | 自动'], source: [b1.id] },
+      { kind: 'steps', heading: '步骤', lines: ['第一步 | 验证', '第二步 | 收集', '第三步 | 固化'], source: [b2.id] },
+      { kind: 'grid', heading: '矩阵', lines: ['模块一 | 清晰', '模块二 | 稳定'], source: [b2.id] },
+      { kind: 'end', heading: '收尾', lines: ['先收藏'], source: [] },
+    ],
+  }
+  const fakeInit = makeFakeCtx(initialXhs)
+  await generateDerivative(fakeInit.ctx, store, { id: article.id, platform: 'xhs', stagedHtml: false })
+
+  const longReferenceCss = [
+    '.ref-dark { background: var(--xhs-dark); color: var(--xhs-ink); }',
+    ...Array.from({ length: 45 }, (_, index) => `.filler-${index} { margin: ${index}px; padding: 20px; }`),
+    '.cv2-tiles { display: grid; grid-template-columns: repeat(5, 1fr); }',
+    '.cv2-box { width: 88px; height: 88px; }',
+    '.cv2-list { display: flex; flex-direction: column; }',
+  ].join('\n')
+  assert.ok(longReferenceCss.length > 2000 && longReferenceCss.length < 4000)
+  const fake = makeFakeCtx(`<xhs-page-style page="1">${longReferenceCss}</xhs-page-style><xhs-card page="1"><div class="ref-dark"><h1>参考图封面</h1><p>正文</p></div><div style="background:var(--xhs-dark)"><span>内联深色区</span></div></xhs-card>`)
+  const updated = await redesignXhsCard(fake.ctx, store, {
+    id: article.id,
+    cardIndex: 0,
+    cardPrompt: '参考这张图重新画',
+    referenceImages: [tinyPng, tinyJpeg],
+  })
+
+  const request = fake.calls[0]
+  assert.match(request.system, /阶段 2：分批自由 HTML\/CSS 精绘任务/)
+  assert.match(request.system, /内联 SVG\/CSS/)
+  assert.match(request.system, /单列纵向布局/)
+  assert.match(request.system, /中性色|黑\/白\/灰/)
+  assert.doesNotMatch(request.system, /禁止与整套卡片中任意其他页/)
+  const parts = request.messages[0].content
+  const labels = parts.filter(part => part.type === 'text').map(part => part.text)
+  assert.ok(labels.includes('[参考图 ref-1]'))
+  assert.ok(labels.includes('[参考图 ref-2]'))
+  const user = JSON.parse(parts[0].text)
+  assert.deepEqual(user.targetCards[0].referenceImageIds, ['ref-1', 'ref-2'])
+  assert.equal(user.targetCards[0].kind, 'cover')
+  assert.match(updated.payload.cards[0].pageCss, /\.ref-dark \*/)
+  assert.match(updated.payload.cards[0].pageCss, /#FFFFFF\s*!important/)
+  assert.match(updated.payload.cards[0].pageCss, /\[style\*="var\(--xhs-dark\)"\]/)
+  assert.match(updated.payload.cards[0].pageCss, /\.cv2-tiles/)
+  assert.match(updated.payload.cards[0].pageCss, /\.cv2-box/)
+  assert.match(updated.payload.cards[0].pageCss, /\.cv2-list/)
+
+  const excessiveCss = `${longReferenceCss}\n${Array.from({ length: 60 }, (_, index) => `.extra-${index} { margin: ${index}px; padding: 20px; }`).join('\n')}`
+  assert.ok(excessiveCss.length > 4000)
+  const retryFake = makeFakeCtx([
+    `<xhs-page-style page="1">${excessiveCss}</xhs-page-style><xhs-card page="1"><div class="ref-dark"><h1>不应保存截断样式</h1></div></xhs-card>`,
+    '<xhs-page-style page="1">.final-rules { display: flex; }</xhs-page-style><xhs-card page="1"><div class="final-rules"><h1>完整重试结果</h1></div></xhs-card>',
+  ])
+  const retried = await redesignXhsCard(retryFake.ctx, store, {
+    id: article.id,
+    cardIndex: 0,
+    cardPrompt: '重新生成但保持样式完整',
+  })
+  assert.equal(retryFake.calls.length, 2, '超出 CSS 预算必须重试，不能保存静默截断的规则')
+  assert.match(retried.payload.cards[0].html, /完整重试结果/)
+  assert.match(retried.payload.cards[0].pageCss, /\.final-rules/)
+})
+
+test('单页重设计模型超时使用 240 秒预算并返回明确的 504 提示', async () => {
+  const { store, article } = setupStore()
+  await store.update(state => { state.articles.push(article); state.currentId = article.id })
+  const [b1, b2] = article.blocks
+  const initialXhs = {
+    title: '单页超时测试',
+    body: '这是一段符合一百字要求的测试小红书正文内容，重点记录我们在做公众号拆解和最小可用版本验证时的真实心得体会。'.repeat(2),
+    tags: ['实操复盘', '最小版本', '个人经验'],
+    cards: [
+      { kind: 'cover', heading: '封面', lines: ['先做最小版本'], source: [b1.id] },
+      { kind: 'compare', heading: '对比', lines: ['以前 | 手动', '现在 | 自动'], source: [b1.id] },
+      { kind: 'steps', heading: '步骤', lines: ['第一步 | 验证', '第二步 | 收集', '第三步 | 固化'], source: [b2.id] },
+      { kind: 'grid', heading: '矩阵', lines: ['模块一 | 清晰', '模块二 | 稳定'], source: [b2.id] },
+      { kind: 'end', heading: '收尾', lines: ['先收藏'], source: [] },
+    ],
+  }
+  const fake = makeFakeCtx(initialXhs)
+  await generateDerivative(fake.ctx, store, { id: article.id, platform: 'xhs', stagedHtml: false })
+
+  const originalTimeout = AbortSignal.timeout
+  const timeoutMs = []
+  try {
+    AbortSignal.timeout = ms => {
+      timeoutMs.push(ms)
+      return AbortSignal.abort()
+    }
+    fake.ctx.get('llm').prepareCall = () => ({
+      config: {},
+      async *stream({ signal }) {
+        signal?.throwIfAborted()
+      },
+    })
+    await assert.rejects(
+      () => redesignXhsCard(fake.ctx, store, { id: article.id, cardIndex: 1 }),
+      err => {
+        assert.equal(err.status, 504)
+        assert.match(err.message, /240 秒/)
+        assert.match(err.message, /响应更快|重试/)
+        return true
+      },
+    )
+  } finally {
+    AbortSignal.timeout = originalTimeout
+  }
+  assert.deepEqual(timeoutMs, [240_000])
+})
+
 test('阶段 3 整套拓扑去重：检出跨页同构（第 2 页与第 4 页重复）并在修复撞车第 3 页时二次复检重设计', async () => {
   const { store, article } = setupStore()
   await store.update(state => { state.articles.push(article); state.currentId = article.id })
