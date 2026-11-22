@@ -6,10 +6,10 @@ import { parseArgs } from 'node:util'
 import { skillSources } from './ai.js'
 import { createArticle, listMeta, splitMarkdown, toMarkdown } from './article.js'
 import { createStandaloneCtx, resolveStandaloneLlmConfig } from './cli-llm.js'
-import { COVER_FORMATS, COVER_PROVIDERS, COVER_RESOLUTIONS, providerFormats } from './cover-options.js'
+import { COVER_FORMATS, COVER_PROVIDERS, COVER_RESOLUTIONS, providerFormats, providerMeta } from './cover-options.js'
 import { buildCoverPromptRequest } from './cover-prompt.js'
 import { COVER_STYLES } from './cover-styles.js'
-import { coverPrompt, generateArkCover, generateBailianCover, readCover, saveCover } from './cover.js'
+import { coverPrompt, generateCoverImage, readCover, saveCover } from './cover.js'
 import { generateDerivative, prepareDerivePrompt } from './derive.js'
 import { toPortableMarkdown } from './derive-markdown.js'
 import { MARKDOWN_TARGETS, THREAD_VARIANTS, threadClipboardText, xhsClipboardText } from './derive-shared.js'
@@ -25,8 +25,6 @@ import { DEFAULT_ENDPOINT, detect, mapSegments } from './zhuque.js'
 const { version: VERSION } = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'))
 
 const ENV_ZHUQUE_KEY = ['ZHUQUE', 'API', 'KEY'].join('_')
-const ENV_ARK_KEY = ['ARK', 'API', 'KEY'].join('_')
-const ENV_BAILIAN_KEY = ['BAILIAN', 'API', 'KEY'].join('_')
 const ENV_WECHAT_APP_ID = ['WECHAT', 'APP', 'ID'].join('_')
 const ENV_WECHAT_APP_SECRET = ['WECHAT', 'APP', 'SECRET'].join('_')
 
@@ -54,8 +52,8 @@ const VALUE_FLAGS = new Set([
   '--data-dir', '--style', '--theme', '--banner', '--out', '--title', '--line', '--lines-file',
   '--range', '--key', '--endpoint', '--resolution', '--format', '--provider',
   '--prompt-file', '--note', '--topic', '--model', '--base-url',
-  '--author', '--slogan', '--cover-provider', '--ark-model', '--bailian-model', '--portrait-url',
-  '--zhuque-key', '--zhuque-endpoint', '--ark-key', '--bailian-key',
+  '--author', '--slogan', '--cover-provider', '--ark-model', '--bailian-model', '--minimax-model', '--portrait-url',
+  '--zhuque-key', '--zhuque-endpoint', '--ark-key', '--bailian-key', '--minimax-key',
   '--mp-name', '--mp-app-id', '--mp-app-secret', '--from-json', '--preflight-words',
   '--app-id', '--app-secret', '--cover', '--avatar', '--target', '--variant',
 ])
@@ -168,11 +166,12 @@ const SUB_HELP = {
   --slogan <text>                      文末关注卡标语
   --style <id>                         默认正文风格（${STYLES.join(', ')}）
   --theme <id>                         默认配色主题（${THEMES.join(', ')}）
-  --cover-provider <ark|bailian>       默认封面生图提供方
-  --ark-model <id> / --bailian-model <id>
+  --cover-provider <${COVER_PROVIDERS.map(p => p.id).join('|')}>
+                                       默认封面生图提供方
+  --ark-model <id> / --bailian-model <id> / --minimax-model <id>
                                        默认封面生图模型
   --portrait-url <https://...|"">      封面人物参考图地址（传空字符串清除）
-  --zhuque-key / --ark-key / --bailian-key <key>
+  --zhuque-key / --ark-key / --bailian-key / --minimax-key <key>
                                        保存对应服务密钥（传空字符串清除）
   --mp-name / --mp-app-id / --mp-app-secret <val>
                                        保存公众号名称、AppID、AppSecret
@@ -657,7 +656,7 @@ async function handleCover(argv, io, secrets) {
   const settings = await readSettings(dataDir)
   const provider = values.provider ?? settings.coverProvider ?? 'ark'
   if (!COVER_PROVIDERS.some(p => p.id === provider)) {
-    throw new UsageError(`不支持的封面提供方：${provider}（可选：ark、bailian）`)
+    throw new UsageError(`不支持的封面提供方：${provider}（可选：${COVER_PROVIDERS.map(p => p.id).join('、')}）`)
   }
   if (!values['prompt-only'] && !providerFormats(provider).includes(values.format)) {
     throw new UsageError(`提供方 ${provider} 仅支持格式：${providerFormats(provider).join(', ')}`)
@@ -690,17 +689,14 @@ async function handleCover(argv, io, secrets) {
     prompt = await coverPrompt(ctx, title, markdown, values.style, settings.persona, { hasReference: Boolean(referenceImage) })
   }
 
-  const apiKey = provider === 'bailian'
-    ? String(io.env[ENV_BAILIAN_KEY] ?? settings.bailianKey ?? '').trim()
-    : String(io.env[ENV_ARK_KEY] ?? settings.arkKey ?? '').trim()
+  const meta = providerMeta(provider)
+  const apiKey = String(io.env[meta.envKey] ?? settings[meta.keyField] ?? '').trim()
   if (apiKey) secrets.push(apiKey)
   if (!apiKey) {
-    const envName = provider === 'bailian' ? ENV_BAILIAN_KEY : ENV_ARK_KEY
-    throw new UsageError(`缺少 ${provider} 生图 API Key，请设置环境变量 ${envName} 或在工作区设置中保存。`)
+    throw new UsageError(`缺少 ${provider} 生图 API Key，请设置环境变量 ${meta.envKey} 或在工作区设置中保存。`)
   }
-  const model = provider === 'bailian' ? settings.bailianModel : settings.arkModel
-  const generate = provider === 'bailian' ? generateBailianCover : generateArkCover
-  const rawImage = await generate(prompt, {
+  const model = settings[meta.modelField]
+  const rawImage = await generateCoverImage(provider, prompt, {
     apiKey, model, resolution: values.resolution, format: values.format, referenceImage,
   }, io.fetchImpl)
   const id = await saveCover(dataDir, rawImage, values.format)
@@ -813,7 +809,7 @@ async function handleStyle(argv, io, secrets) {
 }
 
 function collectPatchSecrets(patch, secrets) {
-  for (const v of [patch.zhuqueKey, patch.arkKey, patch.bailianKey, patch.cloudinary?.apiSecret, patch.mp?.appSecret]) {
+  for (const v of [patch.zhuqueKey, patch.arkKey, patch.bailianKey, patch.minimaxKey, patch.cloudinary?.apiSecret, patch.mp?.appSecret]) {
     if (typeof v === 'string' && v.trim()) secrets.push(v.trim())
   }
 }
@@ -823,11 +819,11 @@ function formatSettingsSummary(pub) {
     `作者：${pub.brand.author}`,
     `标语：${pub.brand.slogan}`,
     `默认排版：${pub.style ?? 'std（默认）'} · ${pub.theme ?? 'orange（默认）'}`,
-    `封面提供方：${pub.coverProvider}（ark=${pub.arkModel}，bailian=${pub.bailianModel}）`,
+    `封面提供方：${pub.coverProvider}（ark=${pub.arkModel}，bailian=${pub.bailianModel}，minimax=${pub.minimaxModel}）`,
     `参考图：${pub.portraitUrl || '(未设置)'}`,
     `朱雀质检：${pub.zhuqueKeySet ? `已配置（****${pub.zhuqueKeyTail}）` : '未配置'}`,
     `体检自定义词：${pub.preflightWords?.length ? `${pub.preflightWords.length} 个（${pub.preflightWords.slice(0, 5).join('、')}）` : '未配置'}`,
-    `生图密钥：火山方舟 ${pub.arkKeySet ? '已配置' : '未配置'} / 百炼 ${pub.bailianKeySet ? '已配置' : '未配置'}`,
+    `生图密钥：火山方舟 ${pub.arkKeySet ? '已配置' : '未配置'} / 百炼 ${pub.bailianKeySet ? '已配置' : '未配置'} / MiniMax ${pub.minimaxKeySet ? '已配置' : '未配置'}`,
     `公众号草稿箱：${pub.mp.appId ? `${pub.mp.name ? `${pub.mp.name} · ` : ''}${pub.mp.appId}（AppSecret ${pub.mp.appSecretSet ? '已配置' : '未配置'}）` : '未配置'}`,
   ].join('\n')
 }
@@ -855,11 +851,13 @@ async function handleSettings(argv, io, secrets) {
       'cover-provider': { type: 'string' },
       'ark-model': { type: 'string' },
       'bailian-model': { type: 'string' },
+      'minimax-model': { type: 'string' },
       'portrait-url': { type: 'string' },
       'zhuque-key': { type: 'string' },
       'zhuque-endpoint': { type: 'string' },
       'ark-key': { type: 'string' },
       'bailian-key': { type: 'string' },
+      'minimax-key': { type: 'string' },
       'mp-name': { type: 'string' },
       'mp-app-id': { type: 'string' },
       'mp-app-secret': { type: 'string' },
@@ -892,11 +890,13 @@ async function handleSettings(argv, io, secrets) {
     if (values['cover-provider'] !== undefined) patch.coverProvider = values['cover-provider']
     if (values['ark-model'] !== undefined) patch.arkModel = values['ark-model']
     if (values['bailian-model'] !== undefined) patch.bailianModel = values['bailian-model']
+    if (values['minimax-model'] !== undefined) patch.minimaxModel = values['minimax-model']
     if (values['portrait-url'] !== undefined) patch.portraitUrl = values['portrait-url']
     if (values['zhuque-key'] !== undefined) patch.zhuqueKey = values['zhuque-key']
     if (values['zhuque-endpoint'] !== undefined) patch.zhuqueEndpoint = values['zhuque-endpoint']
     if (values['ark-key'] !== undefined) patch.arkKey = values['ark-key']
     if (values['bailian-key'] !== undefined) patch.bailianKey = values['bailian-key']
+    if (values['minimax-key'] !== undefined) patch.minimaxKey = values['minimax-key']
     if (values['preflight-words'] !== undefined) {
       patch.preflightWords = values['preflight-words'].trim()
         ? values['preflight-words'].split(/[,，\n]/).map(s => s.trim()).filter(Boolean)

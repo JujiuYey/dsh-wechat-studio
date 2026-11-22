@@ -179,6 +179,27 @@ test('百炼四个模型：纯文本 content、2048*1152 和 PNG 下载', async 
   }
 })
 
+test('MiniMax 双模型插图：纯文生图 2048x1152 PNG，关闭 Prompt 增强且不带参考图', async () => {
+  for (const model of ['MiniMax-H3-Image', 'MiniMax-H3-Image-Highspeed']) {
+    let seenUrl
+    let body
+    const image = await generateInlineImage(diagram, { style: 'infographic', provider: 'minimax', model, apiKey: 'mm-k' }, async (url, init) => {
+      seenUrl = url
+      body = JSON.parse(init.body)
+      return Response.json({ data: [{ b64_json: PNG.toString('base64') }] })
+    })
+    assert.ok(image.equals(PNG))
+    assert.equal(seenUrl, 'https://api.minimax.cn/v1/images/generations')
+    assert.equal(body.model, model)
+    assert.equal(body.size, '2048x1152')
+    assert.equal(body.output_format, 'png')
+    assert.equal(body.response_format, 'b64_json')
+    assert.equal(body.disable_prompt_enhanced, true)
+    assert.equal('images' in body, false)
+    assert.match(body.prompt, /任务接力/)
+  }
+})
+
 test('插图提示词使用风格白名单和图种结构，超时与无效响应原样暴露', async () => {
   assert.match(await inlineDiagramPrompt(diagram, 'whiteboard-sketch'), /whiteboard sketch/)
   await assert.rejects(inlineDiagramPrompt(diagram, 'cover'), /插图风格/)

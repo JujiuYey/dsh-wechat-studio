@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { COVER_RESOLUTIONS, COVER_FORMATS, MAX_COVER_COUNT, providerFormats } from './cover-options.js'
+import { COVER_RESOLUTIONS, COVER_FORMATS, MAX_COVER_COUNT, providerFormats, providerMeta } from './cover-options.js'
 // dsh-wechat-studio host 半片：/wechat-studio/* 接口。
 import { join } from 'node:path'
 import { readFile } from 'node:fs/promises'
@@ -17,7 +17,7 @@ import { DERIVE_PLATFORMS } from './derive-shared.js'
 import { coverRuns, duplicateArticle } from './duplicate-article.js'
 import { analyzeInlineDiagrams, DIAGRAM_KINDS, insertDiagramBlock, sourceHash } from './inline-diagrams.js'
 import { loadInlineStyle, readInlineStyleCatalog } from './inline-skill.js'
-import { coverDownloadName, coverPrompt, generateArkCover, generateBailianCover, readCover, saveCover } from './cover.js'
+import { coverDownloadName, coverPrompt, generateCoverImage, readCover, saveCover } from './cover.js'
 import { COVER_STYLES } from './cover-styles.js'
 import { STYLES, THEMES, detectionText, renderLayout, resolveLayoutPreferences } from './layout.js'
 import { applyRule, buildInsights, EXPERIMENT_RESULTS, importData, INSIGHTS_EMPTY, previewRule } from './insights.js'
@@ -124,13 +124,16 @@ function startCover(deps, article, apiKey, options) {
         Object.assign(job, { stage: 'generating', index })
         let id
         try {
-          const generate = options.provider === 'bailian' ? generateBailianCover : generateArkCover
-          const image = await generate(prompt, { ...options, apiKey }, fetchImpl)
+          const image = await generateCoverImage(options.provider, prompt, { ...options, apiKey }, fetchImpl)
           job.stage = 'saving'
           id = await saveCover(store.root, image, options.format)
         } catch (err) {
-          const message = err.name === 'TimeoutError' ? '封面生成超时，请重试。' : err.message
+          const isMinimaxTimeout = options.provider === 'minimax' && (err.code === 'MINIMAX_TIMEOUT' || err.name === 'TimeoutError')
+          const message = isMinimaxTimeout
+            ? (err.code === 'MINIMAX_TIMEOUT' ? err.message : 'MiniMax 封面生成已等待 600 秒并断开，服务端仍可能完成并计费；请避免立即重复提交。')
+            : (err.name === 'TimeoutError' ? '封面生成超时，请重试。' : err.message)
           await store.update(() => { record.errors.push(`第 ${index} 张：${message}`) })
+          if (err.nonRetryable || isMinimaxTimeout) break
           continue
         }
         await store.update(() => { record.images.push({ id }) })
@@ -191,7 +194,12 @@ function inlineDiagramView(article, store) {
   })
 }
 
-function inlineError(err, action) {
+function inlineError(err, action, provider = null) {
+  if (provider === 'minimax' && (err.code === 'MINIMAX_TIMEOUT' || err.name === 'TimeoutError')) {
+    return err.code === 'MINIMAX_TIMEOUT'
+      ? err.message
+      : `MiniMax ${action}已等待 600 秒并断开，服务端仍可能完成并计费；请避免立即重复提交。`
+  }
   if (err.name === 'TimeoutError' || err.name === 'AbortError') return `${action}超时，请重试。`
   return err.message || `${action}失败，请重试。`
 }
@@ -208,7 +216,7 @@ function startInlineJob(deps, articleId, job, run) {
       await store.update(state => {
         const article = state.articles.find(item => item.id === articleId)
         if (!article) return
-        const message = inlineError(err, job.kind === 'generate' ? '插图生成' : job.kind === 'insert' ? '插图上传或插入' : '正文分析')
+        const message = inlineError(err, job.kind === 'generate' ? '插图生成' : job.kind === 'insert' ? '插图上传或插入' : '正文分析', job.provider)
         article.inlineMessage = { error: true, text: message, at: new Date().toISOString() }
         if (job.kind === 'generate') {
           const diagram = article.inlineDiagrams?.find(item => item.id === job.diagramId)
@@ -243,8 +251,9 @@ function startInlineAnalysis(deps, articleId, blockId) {
 
 function startInlineGeneration(deps, articleId, diagramId, style, settings) {
   const provider = settings.coverProvider
-  const model = provider === 'bailian' ? settings.bailianModel : settings.arkModel
-  const apiKey = provider === 'bailian' ? settings.bailianKey : settings.arkKey
+  const meta = providerMeta(provider)
+  const model = settings[meta.modelField]
+  const apiKey = settings[meta.keyField]
   startInlineJob(deps, articleId, { kind: 'generate', stage: 'generating', diagramId, provider, style }, async () => {
     const diagram = await deps.store.update(state => {
       const article = activeInlineArticle(state, articleId)
@@ -686,8 +695,9 @@ export async function route(deps, req, res) {
       if (diagram.pendingAnalysis) return json(res, 409, { error: '换位置后需要按新段落重新分析，请先点击「刷新建议」。' })
       if (sourceHash(anchor.text) !== diagram.sourceHash) return json(res, 409, { error: '段落已改动；如需按新内容重画，请删除这条记录后用「指定段落」重新分析；插入旧图则需明确确认。' })
       const settings = await readSettings(store.root)
-      const apiKey = settings.coverProvider === 'bailian' ? settings.bailianKey : settings.arkKey
-      if (!apiKey) return json(res, 400, { error: settings.coverProvider === 'bailian' ? '请先在设置中填写阿里云百炼 API Key。' : '请先在设置中填写火山方舟 API Key。' })
+      const meta = providerMeta(settings.coverProvider)
+      const apiKey = settings[meta.keyField]
+      if (!apiKey) return json(res, 400, { error: meta.missingKeyError })
       startInlineGeneration(deps, article.id, diagram.id, body.style, settings)
       return ok()
     }
@@ -872,9 +882,10 @@ export async function route(deps, req, res) {
       const settings = await readSettings(store.root)
       const provider = settings.coverProvider
       if (!providerFormats(provider).includes(format)) return json(res, 400, { error: '当前封面提供方只支持 png 格式。' })
-      const apiKey = provider === 'bailian' ? settings.bailianKey : settings.arkKey
-      const model = provider === 'bailian' ? settings.bailianModel : settings.arkModel
-      if (!apiKey) return json(res, 400, { error: provider === 'bailian' ? '请先在设置中填写阿里云百炼 API Key。' : '请先在设置中填写火山方舟 API Key。' })
+      const meta = providerMeta(provider)
+      const apiKey = settings[meta.keyField]
+      const model = settings[meta.modelField]
+      if (!apiKey) return json(res, 400, { error: meta.missingKeyError })
       // felt 是毛毡微缩场景，传真人参考图会把画面拉回真人摄影
       const referenceImage = style === 'felt' ? null : settings.portraitUrl || null
       startCover(deps, article, apiKey, { style, resolution, count, format, model, provider, referenceImage, persona: settings.persona })

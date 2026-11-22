@@ -41,7 +41,15 @@ try {
   const layout = run('wechat-studio layout article.md --style neo --theme forest --out preview.html --data-dir data --json')
   assert.equal(layout.ok, true)
   assert.match(await readFile(join(dir, 'preview.html'), 'utf8'), /零依赖安装后仍然可以排版/)
-  console.log('Installed package: exports, version, bundled skills and offline layout passed')
+  const minimaxSet = run('wechat-studio settings set --cover-provider minimax --minimax-model MiniMax-H3-Image-Highspeed --data-dir data --json')
+  assert.equal(minimaxSet.ok, true)
+  assert.equal(minimaxSet.settings.coverProvider, 'minimax')
+  assert.equal(minimaxSet.settings.minimaxModel, 'MiniMax-H3-Image-Highspeed')
+  const minimaxGet = run('wechat-studio settings get --data-dir data --json')
+  assert.equal(minimaxGet.ok, true)
+  assert.equal(minimaxGet.settings.coverProvider, 'minimax')
+  assert.equal(minimaxGet.settings.minimaxModel, 'MiniMax-H3-Image-Highspeed')
+  console.log('Installed package: exports, version, bundled skills, MiniMax settings and offline layout passed')
 } finally {
   await rm(dir, { recursive: true, force: true })
 }

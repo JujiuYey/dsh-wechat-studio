@@ -1,5 +1,5 @@
 import React from 'react'
-import { COVER_PROVIDERS, modelsFor } from '../src/cover-options.js'
+import { COVER_PROVIDERS, modelsFor, providerMeta } from '../src/cover-options.js'
 import notebookPreview from './assets/inline-styles/notebook.webp'
 import infographicPreview from './assets/inline-styles/infographic.webp'
 import whiteboardPreview from './assets/inline-styles/whiteboard-sketch.webp'
@@ -149,8 +149,9 @@ function GenerateDialog({ article, diagram, onClose }) {
   const [busy, setBusy] = React.useState(false)
   React.useEffect(() => { loadSettings() }, [])
   const provider = settings?.coverProvider
-  const keyReady = provider === 'bailian' ? settings?.bailianKeySet : settings?.arkKeySet
-  const model = provider === 'bailian' ? settings?.bailianModel : settings?.arkModel
+  const meta = provider ? providerMeta(provider) : null
+  const keyReady = meta ? settings?.[meta.keySetField] : false
+  const model = meta ? settings?.[meta.modelField] : null
   const modelName = modelsFor(provider).find(item => item.id === model)?.name ?? model
   const submit = async event => {
     event.preventDefault()

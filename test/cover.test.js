@@ -7,8 +7,8 @@ import { test } from 'node:test'
 import { deflateSync } from 'node:zlib'
 import { createArticle } from '../src/article.js'
 import { COVER_SKILL_DIR } from '../src/ai.js'
-import { coverDownloadName, generateArkCover, generateBailianCover, readCover, saveCover } from '../src/cover.js'
-import { BAILIAN_SIZES, modelsFor, providerFormats } from '../src/cover-options.js'
+import { coverDownloadName, generateArkCover, generateBailianCover, generateCoverImage, generateMinimaxCover, readCover, saveCover } from '../src/cover.js'
+import { BAILIAN_SIZES, COVER_PROVIDERS, INLINE_IMAGE_SIZES, MINIMAX_SIZES, modelsFor, providerFormats } from '../src/cover-options.js'
 import { COVER_STYLES } from '../src/cover-styles.js'
 import { PNG } from 'pngjs'
 import { AUTHOR_SAMPLE_PORTRAIT, publicSettings, readSettings, updateSettings } from '../src/settings.js'
@@ -16,6 +16,8 @@ import { Store } from '../src/store.js'
 
 const DASHSCOPE = 'https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation'
 const ARK = 'https://ark.cn-beijing.volces.com/api/v3/images/generations'
+const MINIMAX_GEN = 'https://api.minimax.cn/v1/images/generations'
+const MINIMAX_EDIT = 'https://api.minimax.cn/v1/images/edits'
 const IMAGE_URL = 'https://dashscope-result.example/cover.png'
 const MD = '# 封面测试标题\n\n这是一段用来生成封面的正文内容，写得稍微长一点方便模型理解主题。\n\n第二段补充一些细节，让素材更完整。'
 
@@ -231,6 +233,7 @@ async function coverHost({ provider, key, model, fetchImpl, llm }) {
   await store.update(state => { state.articles.push(article); state.currentId = article.id })
   const settings = { coverProvider: provider }
   if (provider === 'bailian') { settings.bailianKey = key; if (model) settings.bailianModel = model }
+  else if (provider === 'minimax') { settings.minimaxKey = key; if (model) settings.minimaxModel = model }
   else { settings.arkKey = key; if (model) settings.arkModel = model }
   await updateSettings(store.root, settings)
   const services = llm ? { llm, agentDefaultModel: { currentSelection: () => ({ provider: 'p', model: 'm' }) } } : {}
@@ -426,4 +429,212 @@ test('saveCover：跨平台裁切落盘，失败提示不再依赖 sips', async 
     saveCover(root, Buffer.from('not an image'), 'png'),
     error => !/sips/.test(error.message) && /封面裁切或保存失败/.test(error.message),
   )
+})
+
+test('MiniMax 选项与尺寸：双模型、格式、47:20 零裁切档位及浏览器安全边界', async () => {
+  assert.ok(COVER_PROVIDERS.some(p => p.id === 'minimax'))
+  assert.deepEqual(modelsFor('minimax').map(m => m.id), ['MiniMax-H3-Image', 'MiniMax-H3-Image-Highspeed'])
+  assert.deepEqual(providerFormats('minimax'), ['png', 'jpeg'])
+  assert.equal(INLINE_IMAGE_SIZES.minimax, '2048x1152')
+  for (const [tier, size] of Object.entries(MINIMAX_SIZES)) {
+    const [w, h] = size.split('x').map(Number)
+    assert.ok(w * h >= 655_360 && w * h <= 9_400_000, `${tier}: ${size} 面积越界`)
+    assert.equal(w % 47, 0, `${tier}: 宽度应为 47 的整数倍`)
+    assert.equal(h % 20, 0, `${tier}: 高度应为 20 的整数倍`)
+    assert.equal(w / 47, h / 20, `${tier}: 严格 47:20 零裁切`)
+  }
+  const source = await readFile(new URL('../src/cover-options.js', import.meta.url), 'utf8')
+  assert.ok(!/from\s+['"]node:/.test(source), 'cover-options.js 必须保持浏览器安全')
+})
+
+test('MiniMax H3：无参考图走 generations 且关 Prompt 增强，有参考图走 edits', async () => {
+  const png = makePng(94, 40)
+  const jpeg = Buffer.from('ffd8ffe000104a464946', 'hex')
+  const calls = []
+  const fetchImpl = async (url, init) => {
+    calls.push({ url, init })
+    const body = JSON.parse(init.body)
+    const img = body.output_format === 'jpeg' ? jpeg : png
+    return Response.json({ data: [{ b64_json: img.toString('base64') }] })
+  }
+
+  const outPng = await generateMinimaxCover('封面提示词', {
+    apiKey: 'mm-key', model: 'MiniMax-H3-Image', resolution: '2K', format: 'png',
+  }, fetchImpl)
+  assert.ok(outPng.equals(png))
+  assert.equal(calls[0].url, MINIMAX_GEN)
+  assert.equal(calls[0].init.headers.authorization, 'Bearer mm-key')
+  const genBody = JSON.parse(calls[0].init.body)
+  assert.equal(genBody.model, 'MiniMax-H3-Image')
+  assert.equal(genBody.size, MINIMAX_SIZES['2K'])
+  assert.equal(genBody.n, 1)
+  assert.equal(genBody.output_format, 'png')
+  assert.equal(genBody.response_format, 'b64_json')
+  assert.equal(genBody.aigc_watermark, false)
+  assert.equal(genBody.disable_prompt_enhanced, true)
+  assert.equal('images' in genBody, false)
+  assert.equal('aspect_ratio' in genBody, false)
+  assert.equal('area' in genBody, false)
+
+  const outJpeg = await generateMinimaxCover('带参考图提示词', {
+    apiKey: 'mm-key', model: 'MiniMax-H3-Image-Highspeed', resolution: '1.5K', format: 'jpeg',
+    referenceImage: 'https://example.com/portrait.png',
+  }, fetchImpl)
+  assert.ok(outJpeg.equals(jpeg))
+  assert.equal(calls[1].url, MINIMAX_EDIT)
+  const editBody = JSON.parse(calls[1].init.body)
+  assert.equal(editBody.model, 'MiniMax-H3-Image-Highspeed')
+  assert.equal(editBody.size, MINIMAX_SIZES['1.5K'])
+  assert.equal(editBody.output_format, 'jpeg')
+  assert.deepEqual(editBody.images, [{ image_url: 'https://example.com/portrait.png' }])
+  assert.equal('disable_prompt_enhanced' in editBody, false)
+
+  await generateMinimaxCover('插图提示词', {
+    apiKey: 'mm-key', model: 'MiniMax-H3-Image', resolution: '1K', size: '2048x1152', format: 'png', subject: '插图',
+  }, fetchImpl)
+  assert.equal(JSON.parse(calls[2].init.body).size, '2048x1152')
+})
+
+test('MiniMax H3：超时不自动重试，返回非幂等计费提醒且不含请重试', async () => {
+  let attempts = 0
+  const timeoutFetch = async () => {
+    attempts++
+    throw new DOMException('The operation was aborted due to timeout', 'TimeoutError')
+  }
+  await assert.rejects(
+    generateMinimaxCover('p', { apiKey: 'k', model: 'MiniMax-H3-Image', resolution: '2K', format: 'png' }, timeoutFetch),
+    err => err.code === 'MINIMAX_TIMEOUT'
+      && err.nonRetryable === true
+      && /600 秒/.test(err.message)
+      && /计费/.test(err.message)
+      && !/请重试/.test(err.message),
+  )
+  assert.equal(attempts, 1)
+})
+
+test('MiniMax H3：错误码映射、body.error.code 兼容、trace_id 优先级、脱敏与 Base64 双重大小校验', async () => {
+  const apiKey = 'sk-minimax-secret-123'
+  const opts = { apiKey, model: 'MiniMax-H3-Image', resolution: '2K', format: 'png' }
+  const reply = (status, body, headers = {}) => async () => Response.json(body, { status, headers })
+
+  // 鉴权：401/1004 与 2049
+  await assert.rejects(generateMinimaxCover('p', opts, reply(401, { error: { message: 'login fail (1004)' }, request_id: 'req-body' })), /鉴权失败.*请求 ID：req-body/)
+  await assert.rejects(generateMinimaxCover('p', opts, reply(400, { error: { code: '2049', message: 'invalid api key' } })), /鉴权失败|API Key 无效/)
+
+  // 余额/积分/套餐额度不足：402 + 1008 / 2053 / 2067
+  await assert.rejects(generateMinimaxCover('p', opts, reply(402, { error: { message: 'insufficient balance (1008)' } })), /余额、积分或套餐额度不足/)
+  await assert.rejects(generateMinimaxCover('p', opts, reply(402, { error: { message: 'insufficient points (2053)' } })), /余额、积分或套餐额度不足/)
+  await assert.rejects(generateMinimaxCover('p', opts, reply(402, { error: { code: 2067, message: 'quota exhausted' } })), /余额、积分或套餐额度不足/)
+
+  // 套餐不支持模型：2068（含 HTTP 402 返回 2068）与 2061 独立映射到套餐升级提示
+  await assert.rejects(generateMinimaxCover('p', opts, reply(402, { error: { message: 'plan not supported (2068)' } })), /套餐等级不支持该模型.*升级套餐/)
+  await assert.rejects(generateMinimaxCover('p', opts, reply(400, { error: { code: '2061', message: 'plan does not support model' } })), /套餐等级不支持该模型.*升级套餐/)
+
+  // 模型不存在/无权使用 & 已下线：2022 / 2069
+  await assert.rejects(generateMinimaxCover('p', opts, reply(400, { error: { code: '2022', message: 'model not found' } })), /模型不存在或当前账号无权使用/)
+  await assert.rejects(generateMinimaxCover('p', opts, reply(400, { error: { message: 'model offline (2069)' } })), /模型已下线/)
+
+  // 内容安全审核：422 + 1026 / 1027 & 200 下单张 data[0].error
+  await assert.rejects(generateMinimaxCover('p', opts, reply(422, { error: { message: 'input sensitive (1026)' } })), /内容安全审核/)
+  await assert.rejects(
+    generateMinimaxCover('p', opts, reply(200, { data: [{ error: { code: '1027', message: 'output failed safety' } }] }, { trace_id: 'trace-200-err' })),
+    /内容安全审核.*请求 ID：trace-200-err/,
+  )
+
+  // 限流与 M Plan 限制：429 + 1002 / 2056 / 2062
+  await assert.rejects(generateMinimaxCover('p', opts, reply(429, { error: { message: 'rate limit (1002)' } })), /速率限制|用量达到上限/)
+  await assert.rejects(generateMinimaxCover('p', opts, reply(429, { error: { message: 'plan limit (2056)' } })), /速率限制|用量达到上限/)
+  await assert.rejects(generateMinimaxCover('p', opts, reply(429, { error: { code: '2062', message: 'm plan rate limit' } })), /速率限制|用量达到上限/)
+
+  // 请求 ID 优先级：body.request_id -> body.error.request_id -> trace_id -> x-request-id，含非法 JSON 与脱敏/限长
+  await assert.rejects(
+    generateMinimaxCover('p', opts, reply(500, { error: { request_id: 'err-req-id', message: `boom Bearer ${apiKey} ${apiKey}` } }, { trace_id: 'hdr-trace' })),
+    err => err.message.includes('err-req-id') && !err.message.includes(apiKey) && !err.message.includes('hdr-trace'),
+  )
+  await assert.rejects(
+    generateMinimaxCover('p', opts, reply(500, { error: { message: 'internal (1000)' } }, { trace_id: `trace-${apiKey}-${'x'.repeat(160)}`, 'x-request-id': 'x-req' })),
+    err => /请求 ID：trace-\[已隐藏\]-/.test(err.message) && !err.message.includes(apiKey) && !err.message.includes('x-req') && err.message.length < 260,
+  )
+  await assert.rejects(
+    generateMinimaxCover('p', opts, reply(500, {}, { 'x-request-id': 'fallback-x-req' })),
+    /HTTP 500.*请求 ID：fallback-x-req/,
+  )
+  const badJsonFetch = async () => new Response('<html>502</html>', { status: 200, headers: { trace_id: 'bad-json-trace' } })
+  await assert.rejects(generateMinimaxCover('p', opts, badJsonFetch), /无效响应.*请求 ID：bad-json-trace/)
+
+  // Base64 校验：空值、编码超限、解码后实际超 24 MB、格式魔数不符
+  await assert.rejects(generateMinimaxCover('p', opts, reply(200, { data: [{}] })), /未返回可保存的封面/)
+  await assert.rejects(generateMinimaxCover('p', opts, reply(200, { data: [{ b64_json: 'A'.repeat(34_000_000) }] })), /超过 24 MB/)
+  // 24 MB + 3 字节 => base64 长度 33,554,436（落在编码长度上限 +16 之内，但解码后实际超过 24 MB）
+  const slightlyOver24Mb = Buffer.alloc(24 * 1024 * 1024 + 3, 0x41).toString('base64')
+  await assert.rejects(generateMinimaxCover('p', opts, reply(200, { data: [{ b64_json: slightlyOver24Mb }] })), /超过 24 MB/)
+  await assert.rejects(generateMinimaxCover('p', opts, reply(200, { data: [{ b64_json: Buffer.from('ffd8ff00', 'hex').toString('base64') }] })), /格式不符/)
+
+  // generateCoverImage 未知提供方报错
+  await assert.rejects(generateCoverImage('unknown', 'p', opts, badJsonFetch), err => err.status === 400 && /生图提供方/.test(err.message))
+})
+
+test('MiniMax 设置与封面路由：持久化脱敏、edits/generations 分流及超时中止剩余批次', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'ws-minimax-settings-'))
+  const def = await readSettings(root)
+  assert.equal(def.minimaxModel, 'MiniMax-H3-Image')
+  assert.equal(def.minimaxKey, '')
+  const pub = publicSettings(await updateSettings(root, {
+    coverProvider: 'minimax',
+    minimaxModel: 'MiniMax-H3-Image-Highspeed',
+    minimaxKey: '  sk-mm-secret-9999  ',
+  }))
+  assert.equal(pub.coverProvider, 'minimax')
+  assert.equal(pub.minimaxModel, 'MiniMax-H3-Image-Highspeed')
+  assert.equal(pub.minimaxKeySet, true)
+  assert.ok(!JSON.stringify(pub).includes('sk-mm-secret-9999'))
+  assert.equal((await readSettings(root)).minimaxKey, 'sk-mm-secret-9999')
+  await assert.rejects(updateSettings(root, { minimaxModel: modelsFor('ark')[0].id }), /MiniMax 封面模型/)
+
+  // 缺 Key 拦截 & 格式支持 png/jpeg
+  const noKey = await coverHost({ provider: 'minimax', key: '' })
+  assert.match((await noKey.request('cover/generate', { id: noKey.article.id, style: 'classic', format: 'png' })).error, /MiniMax API Key/)
+  assert.match((await noKey.request('cover/generate', { id: noKey.article.id, style: 'classic', format: 'jpeg' })).error, /MiniMax API Key/)
+
+  // 有 portraitUrl 时 classic 走 edits，felt 不带参考图走 generations
+  const png = makePng(94, 40)
+  const calls = []
+  const okFetch = async (url, init) => {
+    calls.push({ url, init })
+    return Response.json({ data: [{ b64_json: png.toString('base64') }] })
+  }
+  const host = await coverHost({ provider: 'minimax', key: 'sk-mm', model: 'MiniMax-H3-Image-Highspeed', fetchImpl: okFetch, llm: await coverLLM('classic') })
+  await updateSettings(host.store.root, { portraitUrl: 'https://example.com/me.png' })
+  await host.request('cover/generate', { id: host.article.id, style: 'classic', resolution: '2K', count: 1, format: 'png' })
+  const afterClassic = await waitCover(host.request)
+  assert.equal(calls[0].url, MINIMAX_EDIT)
+  assert.equal(afterClassic.cover.provider, 'minimax')
+  assert.equal(afterClassic.cover.model, 'MiniMax-H3-Image-Highspeed')
+
+  const feltHost = await coverHost({ provider: 'minimax', key: 'sk-mm', fetchImpl: okFetch, llm: await coverLLM('felt') })
+  await updateSettings(feltHost.store.root, { portraitUrl: 'https://example.com/me.png' })
+  await feltHost.request('cover/generate', { id: feltHost.article.id, style: 'felt', resolution: '1K', count: 1, format: 'png' })
+  await waitCover(feltHost.request)
+  assert.equal(calls.at(-1).url, MINIMAX_GEN)
+  assert.equal(JSON.parse(calls.at(-1).init.body).disable_prompt_enhanced, true)
+
+  // count: 3 时第 1 张超时：立即停止剩余 2 张，不重试、不继续付费请求
+  let timeoutCalls = 0
+  const timeoutHost = await coverHost({
+    provider: 'minimax',
+    key: 'sk-mm',
+    fetchImpl: async () => {
+      timeoutCalls++
+      throw new DOMException('timeout', 'TimeoutError')
+    },
+    llm: await coverLLM('classic'),
+  })
+  await timeoutHost.request('cover/generate', { id: timeoutHost.article.id, style: 'classic', resolution: '2K', count: 3, format: 'png' })
+  const afterTimeout = await waitCover(timeoutHost.request)
+  assert.equal(timeoutCalls, 1, 'MiniMax 超时后应立即停止剩余批次，不能继续发起付费请求')
+  const run = afterTimeout.coverRuns.at(-1)
+  assert.equal(run.status, 'failed')
+  assert.equal(run.errors.length, 1)
+  assert.match(run.errors[0], /600 秒.*计费/)
+  assert.doesNotMatch(run.errors[0], /请重试/)
 })

@@ -1,6 +1,6 @@
 import { blockKind, parseMarkdownImage, plainOf, splitMarkdown } from '../src/article.js'
 import magentaPreview from './assets/cover-styles/magenta.webp'
-import { COVER_PROVIDERS, modelsFor, providerFormats, COVER_RESOLUTIONS, MAX_COVER_COUNT } from '../src/cover-options.js'
+import { COVER_PROVIDERS, modelsFor, providerFormats, providerMeta, COVER_RESOLUTIONS, MAX_COVER_COUNT } from '../src/cover-options.js'
 import classicPreview from './assets/cover-styles/classic.webp'
 import editorialPreview from './assets/cover-styles/editorial.webp'
 import campaignPreview from './assets/cover-styles/campaign.webp'
@@ -1684,11 +1684,9 @@ function SettingsDialog({ onOpenPlugin }) {
   const [page, setPage] = React.useState(settingsPage ?? 'brand')
   const [cloudinary, setCloudinary] = React.useState({})
   const [brand, setBrand] = React.useState({})
-  const [arkModel, setArkModel] = React.useState(null)
-  const [arkKey, setArkKey] = React.useState('')
   const [coverProvider, setCoverProvider] = React.useState(null)
-  const [bailianModel, setBailianModel] = React.useState(null)
-  const [bailianKey, setBailianKey] = React.useState('')
+  const [coverModels, setCoverModels] = React.useState({})
+  const [coverKeys, setCoverKeys] = React.useState({})
   const [portraitUrl, setPortraitUrl] = React.useState(null)
   const [persona, setPersona] = React.useState({})
   const [portraitBusy, setPortraitBusy] = React.useState(false)
@@ -1708,10 +1706,10 @@ function SettingsDialog({ onOpenPlugin }) {
   const close = () => setState({ dialog: null, settingsPage: null })
   if (!settings) return <div className="ws-scrim"><div className="ws-dialog"><span className="ws-shimmer">正在读取设置…</span></div></div>
   const providerValue = coverProvider ?? settings.coverProvider
-  const isBailian = providerValue === 'bailian'
+  const pMeta = providerMeta(providerValue)
   const pages = [
     { id: 'brand', title: '公众号品牌', icon: 'doc', description: '设置开头横幅和文末关注卡的品牌文案。' },
-    { id: 'cover', title: '封面生成', icon: 'spark', description: isBailian ? '配置阿里云百炼的生图模型和凭证。' : '配置火山方舟的生图模型和凭证。', ready: isBailian ? settings.bailianKeySet : settings.arkKeySet, link: isBailian ? 'https://bailian.console.aliyun.com/cn-beijing/model/settings/api-key' : 'https://ark.volcengine.com/region:cn-beijing/apikey', linkLabel: isBailian ? '阿里云百炼 API Key' : '火山方舟 API Key' },
+    { id: 'cover', title: '封面生成', icon: 'spark', description: pMeta.description, ready: settings[pMeta.keySetField], link: pMeta.link, linkLabel: pMeta.linkLabel },
     { id: 'storage', title: '图片图床', icon: 'upload', description: '将飞书图片自动转存到 Cloudinary，供排版预览使用。', ready: Boolean(settings.cloudinary?.cloudName && settings.cloudinary?.apiKey && settings.cloudinary?.apiSecretSet), link: 'https://console.cloudinary.com/settings/api-keys', linkLabel: 'Cloudinary API Keys' },
     { id: 'quality', title: '朱雀质检', icon: 'scan', description: '管理检测凭证和需要排除的固定文案。', ready: settings.zhuqueKeySet, link: 'https://console.cloud.tencent.com/edgeone', linkLabel: 'EdgeOne 控制台' },
     { id: 'preflight', title: '发布体检', icon: 'check', description: '配置本地发布防踩坑体检的自定义提醒词（仅提醒，不阻断发布）。' },
@@ -1726,13 +1724,15 @@ function SettingsDialog({ onOpenPlugin }) {
     if (preflightWords !== null) out.preflightWords = preflightWords.split('\n')
     out.brand = brand
     out.coverProvider = providerValue
-    out.arkModel = arkModel ?? settings.arkModel
-    out.bailianModel = bailianModel ?? settings.bailianModel
+    for (const item of COVER_PROVIDERS) {
+      const meta = providerMeta(item.id)
+      out[meta.modelField] = coverModels[item.id] ?? settings[meta.modelField]
+      const trimmedKey = (coverKeys[item.id] ?? '').trim()
+      if (trimmedKey) out[meta.keyField] = trimmedKey
+    }
     out.persona = { ...settings.persona, ...persona }
     // 只有改过才提交，避免把读到的旧值（可能是作者示例照片）再写一遍
     if (portraitUrl !== null) out.portraitUrl = portraitUrl
-    if (arkKey.trim()) out.arkKey = arkKey.trim()
-    if (bailianKey.trim()) out.bailianKey = bailianKey.trim()
     if (key.trim()) out.zhuqueKey = key.trim()
     out.cloudinary = { ...cloudinary }
     if (out.cloudinary.apiSecret === '') delete out.cloudinary.apiSecret
@@ -1807,17 +1807,17 @@ function SettingsDialog({ onOpenPlugin }) {
                 </select>
               </label>
               <label className="ws-field"><span>图片模型</span>
-                <select value={isBailian ? bailianModel ?? settings.bailianModel : arkModel ?? settings.arkModel}
-                  onChange={e => (isBailian ? setBailianModel(e.target.value) : setArkModel(e.target.value))}>
+                <select value={coverModels[providerValue] ?? settings[pMeta.modelField]}
+                  onChange={e => setCoverModels(prev => ({ ...prev, [providerValue]: e.target.value }))}>
                   {modelsFor(providerValue).map(model => <option key={model.id} value={model.id}>{model.name}</option>)}
                 </select>
               </label>
               <label className="ws-field"><span>API Key</span>
-                <input type="password" autoComplete="off" value={isBailian ? bailianKey : arkKey}
-                  onChange={e => (isBailian ? setBailianKey(e.target.value) : setArkKey(e.target.value))}
-                  placeholder={(isBailian ? settings.bailianKeySet : settings.arkKeySet) ? '已保存，留空表示不改' : isBailian ? '输入阿里云百炼 API Key' : '输入火山方舟 API Key'} />
+                <input type="password" autoComplete="off" value={coverKeys[providerValue] ?? ''}
+                  onChange={e => setCoverKeys(prev => ({ ...prev, [providerValue]: e.target.value }))}
+                  placeholder={settings[pMeta.keySetField] ? '已保存，留空表示不改' : pMeta.keyPlaceholder} />
               </label>
-              {isBailian ? <p className="ws-muted ws-small">当前仅支持中国内地（北京）的百炼 API Key，图片格式为 PNG。</p> : null}
+              {pMeta.hint ? <p className="ws-muted ws-small">{pMeta.hint}</p> : null}
               {(() => {
                 const portraitValue = portraitUrl ?? settings.portraitUrl ?? ''
                 const previewUrl = portraitPreview ?? settings.portraitUrl ?? ''

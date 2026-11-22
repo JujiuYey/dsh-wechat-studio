@@ -1166,3 +1166,86 @@ test('derive 子命令：导出通用 Markdown、--prompt-only 与串推生成',
     await rm(dir, { recursive: true, force: true })
   }
 })
+
+test('CLI MiniMax H3：settings 配置脱敏与 cover（环境变量、参考图分流及超时提示）', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'ws-cli-minimax-'))
+  const mmKeyEnv = ['MINIMAX', 'API', 'KEY'].join('_')
+  const mmKeyFlag = ['--minimax', 'key'].join('-')
+  const secret = 'mm-cli-secret-8888'
+  const png = makePngBuffer(94, 40)
+  try {
+    // 1. settings set 写入 MiniMax 提供方、模型与密钥（不回显明文）
+    const setIo = makeIo()
+    assert.equal(await runCli([
+      'settings', 'set',
+      '--cover-provider', 'minimax',
+      '--minimax-model', 'MiniMax-H3-Image-Highspeed',
+      mmKeyFlag, secret,
+      '--data-dir', dir,
+      '--json',
+    ], setIo), 0)
+    const setOut = setIo.read().out
+    assert.doesNotMatch(setOut, new RegExp(secret))
+    const setRes = JSON.parse(setOut)
+    assert.equal(setRes.ok, true)
+    assert.equal(setRes.settings.coverProvider, 'minimax')
+    assert.equal(setRes.settings.minimaxModel, 'MiniMax-H3-Image-Highspeed')
+    assert.equal(setRes.settings.minimaxKeySet, true)
+
+    // 2. settings get 人类可读摘要包含 MiniMax
+    const getHumanIo = makeIo()
+    assert.equal(await runCli(['settings', 'get', '--data-dir', dir], getHumanIo), 0)
+    assert.match(getHumanIo.read().out, /minimax=MiniMax-H3-Image-Highspeed/)
+    assert.match(getHumanIo.read().out, /MiniMax 已配置/)
+
+    // 3. cover --prompt-file 无参考图走 generations，支持环境变量覆盖
+    const promptPath = join(dir, 'prompt.txt')
+    const outPath = join(dir, 'cover-mm.png')
+    await writeFile(promptPath, '测试 MiniMax H3 封面提示词', 'utf8')
+    const calls = []
+    const envCoverIo = makeIo({
+      env: { [mmKeyEnv]: 'env-mm-key' },
+      fetchImpl: async (url, init) => {
+        calls.push({ url, init })
+        return Response.json({ data: [{ b64_json: png.toString('base64') }] })
+      },
+    })
+    assert.equal(await runCli([
+      'cover', '--prompt-file', promptPath, '--provider', 'minimax', '--out', outPath, '--data-dir', dir, '--json',
+    ], envCoverIo), 0)
+    assert.equal(calls[0].url, 'https://api.minimax.cn/v1/images/generations')
+    assert.equal(calls[0].init.headers.authorization, 'Bearer env-mm-key')
+    assert.equal(JSON.parse(calls[0].init.body).model, 'MiniMax-H3-Image-Highspeed')
+    assert.equal(JSON.parse(calls[0].init.body).disable_prompt_enhanced, true)
+    assert.ok((await readFile(outPath)).length > 0)
+
+    // 4. 设置 portraitUrl 后走 edits（用工作区已保存的密钥）
+    assert.equal(await runCli(['settings', 'set', '--portrait-url', 'https://example.com/me.png', '--data-dir', dir, '--json'], makeIo()), 0)
+    const editCoverIo = makeIo({
+      fetchImpl: async (url, init) => {
+        calls.push({ url, init })
+        return Response.json({ data: [{ b64_json: png.toString('base64') }] })
+      },
+    })
+    assert.equal(await runCli(['cover', '--prompt-file', promptPath, '--data-dir', dir, '--json'], editCoverIo), 0)
+    assert.equal(calls[1].url, 'https://api.minimax.cn/v1/images/edits')
+    assert.equal(calls[1].init.headers.authorization, `Bearer ${secret}`)
+    assert.deepEqual(JSON.parse(calls[1].init.body).images, [{ image_url: 'https://example.com/me.png' }])
+
+    // 5. 超时仅调用 1 次且返回非幂等提示（不含请重试）
+    let timeoutAttempts = 0
+    const timeoutIo = makeIo({
+      fetchImpl: async () => {
+        timeoutAttempts++
+        throw new DOMException('timeout', 'TimeoutError')
+      },
+    })
+    assert.equal(await runCli(['cover', '--prompt-file', promptPath, '--provider', 'minimax', '--data-dir', dir, '--json'], timeoutIo), 1)
+    assert.equal(timeoutAttempts, 1)
+    const timeoutRes = JSON.parse(timeoutIo.read().out)
+    assert.match(timeoutRes.error, /600 秒.*计费/)
+    assert.doesNotMatch(timeoutRes.error, /请重试/)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})

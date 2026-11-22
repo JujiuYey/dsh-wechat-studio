@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { generateArkCover, generateBailianCover } from './cover.js'
+import { generateCoverImage } from './cover.js'
 import { INLINE_IMAGE_SIZES } from './cover-options.js'
 import { loadInlineStyle } from './inline-skill.js'
 
@@ -29,14 +29,15 @@ export async function inlineDiagramPrompt(diagram, style, { skillsDir } = {}) {
 }
 
 export async function generateInlineImage(diagram, { style, provider, model, apiKey, skillsDir }, fetchImpl = fetch) {
+  if (!Object.hasOwn(INLINE_IMAGE_SIZES, provider)) {
+    throw Object.assign(new Error('请选择有效的生图提供方。'), { status: 400 })
+  }
   const prompt = await inlineDiagramPrompt(diagram, style, { skillsDir })
   const options = {
     apiKey, model, referenceImage: null, format: 'png', resolution: INLINE_IMAGE_SIZES[provider],
     size: INLINE_IMAGE_SIZES[provider], subject: '插图',
   }
-  if (provider === 'ark') return generateArkCover(prompt, options, fetchImpl)
-  if (provider === 'bailian') return generateBailianCover(prompt, options, fetchImpl)
-  throw Object.assign(new Error('请选择有效的生图提供方。'), { status: 400 })
+  return generateCoverImage(provider, prompt, options, fetchImpl)
 }
 
 export async function saveInlineImage(root, image) {

@@ -546,3 +546,41 @@ test('带方括号的图注在稿面解析和排版预览中都正常显示', as
   assert.ok(html.includes(PUBLIC_URL))
   assert.match(html, /流程 \[旧版\] 图/)
 })
+
+test('正文插图路由支持 MiniMax：缺 Key 拦截、正常生成与超时非幂等提示', async () => {
+  let calls = 0
+  const { store, article, request, wait } = await setup({
+    fetchImpl: async url => {
+      calls++
+      assert.equal(url, 'https://api.minimax.cn/v1/images/generations')
+      return Response.json({ data: [{ b64_json: PNG.toString('base64') }] })
+    },
+  })
+  await updateSettings(store.root, { coverProvider: 'minimax', minimaxKey: '' })
+  const missing = await request('inline-diagrams/generate', { id: article.id, diagramId: 'diagram-1', style: 'notebook' })
+  assert.match(missing.error, /MiniMax API Key/)
+
+  await updateSettings(store.root, { coverProvider: 'minimax', minimaxKey: 'sk-mm-inline', minimaxModel: 'MiniMax-H3-Image-Highspeed' })
+  const started = await request('inline-diagrams/generate', { id: article.id, diagramId: 'diagram-1', style: 'notebook' })
+  assert.ok(!started.error, started.error)
+  const current = await wait()
+  assert.equal(calls, 1)
+  assert.equal(current.inlineDiagrams[0].status, 'generated')
+  assert.equal(current.inlineDiagrams[0].provider, 'minimax')
+  assert.equal(current.inlineDiagrams[0].model, 'MiniMax-H3-Image-Highspeed')
+
+  let timeoutCalls = 0
+  const timeoutCtx = await setup({
+    fetchImpl: async () => {
+      timeoutCalls++
+      throw new DOMException('timeout', 'TimeoutError')
+    },
+  })
+  await updateSettings(timeoutCtx.store.root, { coverProvider: 'minimax', minimaxKey: 'sk-mm-inline' })
+  await timeoutCtx.request('inline-diagrams/generate', { id: timeoutCtx.article.id, diagramId: 'diagram-1', style: 'notebook' })
+  const afterTimeout = await timeoutCtx.wait()
+  assert.equal(timeoutCalls, 1)
+  assert.equal(afterTimeout.inlineDiagrams[0].status, 'failed')
+  assert.match(afterTimeout.inlineDiagrams[0].error, /600 秒.*计费/)
+  assert.doesNotMatch(afterTimeout.inlineDiagrams[0].error, /请重试/)
+})

@@ -100,6 +100,8 @@ export async function readSettings(root) {
     coverProvider: COVER_PROVIDERS.some(provider => provider.id === saved.coverProvider) ? saved.coverProvider : 'ark',
     bailianModel: modelsFor('bailian').find(model => model.id === saved.bailianModel)?.id ?? modelsFor('bailian')[0].id,
     bailianKey: typeof saved.bailianKey === 'string' ? saved.bailianKey : '',
+    minimaxModel: modelsFor('minimax').find(model => model.id === saved.minimaxModel)?.id ?? modelsFor('minimax')[0].id,
+    minimaxKey: typeof saved.minimaxKey === 'string' ? saved.minimaxKey : '',
     portraitUrl: typeof saved.portraitUrl === 'string' ? saved.portraitUrl : '',
     persona: normalizePersona(saved.persona),
     cloudinary: {
@@ -168,6 +170,13 @@ export async function updateSettings(root, body) {
     next.bailianModel = body.bailianModel
   }
   if (typeof body.bailianKey === 'string') next.bailianKey = body.bailianKey.trim().slice(0, 400)
+  if (body.minimaxModel !== undefined) {
+    if (!modelsFor('minimax').some(model => model.id === body.minimaxModel)) {
+      throw Object.assign(new Error('请选择支持的 MiniMax 封面模型。'), { status: 400 })
+    }
+    next.minimaxModel = body.minimaxModel
+  }
+  if (typeof body.minimaxKey === 'string') next.minimaxKey = body.minimaxKey.trim().slice(0, 400)
   if (typeof body.portraitUrl === 'string') {
     const value = body.portraitUrl.trim().slice(0, 2000)
     const url = value ? (URL.canParse(value) ? new URL(value) : null) : null
@@ -262,6 +271,8 @@ export function publicSettings(settings) {
     coverProvider: settings.coverProvider,
     bailianModel: settings.bailianModel,
     bailianKeySet: Boolean(settings.bailianKey),
+    minimaxModel: settings.minimaxModel,
+    minimaxKeySet: Boolean(settings.minimaxKey),
     portraitUrl: settings.portraitUrl,
     persona: settings.persona ?? DEFAULT_PERSONA,
     portraitIsAuthorSample: settings.portraitUrl === AUTHOR_SAMPLE_PORTRAIT,
