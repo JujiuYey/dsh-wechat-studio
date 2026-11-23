@@ -1662,7 +1662,7 @@ body:has(.ws-xhs-studio) .ws-toast { bottom: 68px; }
 .ws-custom-cover-item-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--line); }
 .ws-custom-cover-item-actions { display: inline-flex; gap: 10px; }
 
-.ws-custom-cover-wizard { width: min(920px, calc(100vw - 32px)); max-width: 920px; max-height: calc(100vh - 36px); display: flex; flex-direction: column; }
+.ws-custom-cover-wizard { width: min(920px, calc(100vw - 32px)); max-width: 920px; max-height: min(100%, calc(100vh - 36px)); display: flex; flex-direction: column; }
 .ws-custom-cover-loading { min-height: 220px; }
 .ws-custom-cover-step { display: grid; gap: 14px; overflow-y: auto; padding-right: 2px; }
 .ws-custom-cover-section { display: grid; gap: 8px; }

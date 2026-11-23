@@ -74,7 +74,7 @@ export async function coverPrompt(ctx, title, markdown, style = 'classic', perso
       issue = '模板字段数量或格式不正确。'
       continue
     }
-    if (slots.some((name, i) => isPersonSegmentSlot(name) && !Object.hasOwn(PERSON_SEGMENTS, values[i]))) {
+    if (!customStyle && slots.some((name, i) => isPersonSegmentSlot(name) && !Object.hasOwn(PERSON_SEGMENTS, values[i]))) {
       issue = `人物段只能填${Object.keys(PERSON_SEGMENTS).map(key => `「${key}」`).join('或')}。`
       continue
     }
@@ -82,7 +82,7 @@ export async function coverPrompt(ctx, title, markdown, style = 'classic', perso
     const filled = body.replace(/\{\{([^{}]+)\}\}/g, (full, raw) => {
       if (customStyle && !raw.trim()) return full
       const i = index++
-      return isPersonSegmentSlot(slots[i]) ? PERSON_SEGMENTS[values[i]] : values[i]
+      return (!customStyle && isPersonSegmentSlot(slots[i])) ? PERSON_SEGMENTS[values[i]] : values[i]
     })
     // 用户写的描述有问题时重试 LLM 没用，直接让用户去设置里改
     const personaBlocked = usedPersonaKeys(filled).map(key => findBlocked(terms, fragments[key])).find(Boolean)

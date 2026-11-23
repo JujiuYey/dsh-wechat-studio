@@ -788,7 +788,7 @@ export async function previewCustomCoverStyle(ctx, root, settings, { draft, test
   }
 
   const provider = settings?.coverProvider || 'ark'
-  const meta = COVER_PROVIDER_META[provider]
+  const meta = Object.hasOwn(COVER_PROVIDER_META, provider) ? COVER_PROVIDER_META[provider] : null
   if (!meta) throw httpError(400, '请选择有效的生图提供方。')
   const apiKey = settings?.[meta.keyField]
   const model = settings?.[meta.modelField]

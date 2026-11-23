@@ -689,22 +689,32 @@ export async function loadCoverStyles() {
   try {
     const res = await request('cover-styles')
     const rawJob = res.activeTestJob ?? null
-    const activeTestJob = rawJob && rawJob.jobId === dismissedTestJobId && rawJob.status !== 'running' ? null : rawJob
-    setState({
-      coverStyles: {
-        styles: Array.isArray(res.styles) ? res.styles : [],
-        warnings: Array.isArray(res.warnings) ? res.warnings : [],
-        visionSupport: res.visionSupport ?? null,
-        activeTestJob,
-        loading: false,
-        error: null,
-      },
+    let nextActiveJob = null
+    setState(s => {
+      const serverJob = rawJob && rawJob.jobId === dismissedTestJobId && rawJob.status !== 'running' ? null : rawJob
+      const prevJob = s.coverStyles?.activeTestJob ?? null
+      const sessionJobId = s.customCoverWizard?.draftSession?.testJobId ?? null
+      const keepLocalFailed = !serverJob
+        && prevJob?.status === 'failed'
+        && prevJob.jobId !== dismissedTestJobId
+        && Boolean(sessionJobId && prevJob.jobId === sessionJobId)
+      nextActiveJob = serverJob ?? (keepLocalFailed ? prevJob : null)
+      return {
+        coverStyles: {
+          styles: Array.isArray(res.styles) ? res.styles : [],
+          warnings: Array.isArray(res.warnings) ? res.warnings : [],
+          visionSupport: res.visionSupport ?? null,
+          activeTestJob: nextActiveJob,
+          loading: false,
+          error: null,
+        },
+      }
     })
-    if (activeTestJob?.status === 'running') {
+    if (nextActiveJob?.status === 'running') {
       stopCoverStyleTestPoll()
       const epoch = coverStyleTestPollEpoch
       coverStyleTestTimer = setTimeout(() => {
-        if (epoch === coverStyleTestPollEpoch) void pollCustomCoverStyleTest(activeTestJob.jobId, 0)
+        if (epoch === coverStyleTestPollEpoch) void pollCustomCoverStyleTest(nextActiveJob.jobId, 0)
       }, 900)
     }
     return res
@@ -745,8 +755,10 @@ export async function startCustomCoverStyleTest(payload) {
     return job
   } catch (err) {
     if (err.status === 409 && err.activeJobId) {
-      toast('已有样图正在后台试生成，已自动恢复进度查看。')
-      return pollCustomCoverStyleTest(err.activeJobId, 0)
+      dismissedTestJobId = null
+      toast('已有样图正在后台试生成，请等待当前任务完成后再试。')
+      void pollCustomCoverStyleTest(err.activeJobId, 0)
+      return null
     }
     throw err
   }
@@ -754,21 +766,27 @@ export async function startCustomCoverStyleTest(payload) {
 
 export async function saveCustomCoverStyle(payload) {
   const res = await postJson('cover-styles/save', payload)
-  stopCoverStyleTestPoll()
-  if (snap.coverStyles?.activeTestJob?.jobId) {
-    dismissedTestJobId = snap.coverStyles.activeTestJob.jobId
+  const active = snap.coverStyles?.activeTestJob ?? null
+  if (active?.status !== 'running') {
+    stopCoverStyleTestPoll()
+    if (active?.jobId) dismissedTestJobId = active.jobId
   }
-  setState(s => ({
-    coverStyles: {
-      styles: Array.isArray(res.styles) ? res.styles : [],
-      warnings: Array.isArray(res.warnings) ? res.warnings : [],
-      visionSupport: s.coverStyles?.visionSupport ?? null,
-      activeTestJob: null,
-      loading: false,
-      error: null,
-    },
-    selectedCoverStyleId: res.style?.id ?? null,
-  }))
+  setState(s => {
+    const curActive = s.coverStyles?.activeTestJob ?? null
+    return {
+      coverStyles: {
+        styles: Array.isArray(res.styles) ? res.styles : [],
+        warnings: Array.isArray(res.warnings) ? res.warnings : [],
+        visionSupport: s.coverStyles?.visionSupport ?? null,
+        activeTestJob: curActive?.status === 'running' ? curActive : null,
+        loading: false,
+        error: null,
+      },
+      selectedCoverStyleId: s.customCoverWizard?.returnTo === 'cover'
+        ? (res.style?.id ?? null)
+        : s.selectedCoverStyleId,
+    }
+  })
   return res
 }
 

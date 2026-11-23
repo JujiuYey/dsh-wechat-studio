@@ -650,4 +650,28 @@ test('previewCustomCoverStyle：分阶段回调、usePortrait 透传肖像照、
     err => err.code === 'MINIMAX_TIMEOUT' && err.nonRetryable === true && /600 秒.*计费/.test(err.message),
   )
   assert.equal(mmCalls, 1)
+
+  // 原型键 provider（如 toString）应报 400
+  await assert.rejects(
+    previewCustomCoverStyle(llmCtx3, root, { ...settings, coverProvider: 'toString' }, {
+      draft: { template: '21:9 标题 {{主标题}}，视觉 {{视觉}}', guidance: '', usePortrait: false },
+      testTitle: '原型键测试',
+    }, fetchImpl),
+    err => err.status === 400 && /生图提供方/.test(err.message),
+  )
+})
+
+test('coverPrompt：自定义风格中的 {{人物段}} 不受内置 felt 枚举约束', async () => {
+  const ctx = mockLlmCtx({ replies: [{ values: ['写给工程师的复盘', '一名背对镜头的剪影站在窗前'] }] })
+  const prompt = await coverPrompt(ctx, '写给工程师的复盘', '# 写给工程师的复盘', 'custom-person-slot', {}, {
+    customStyle: {
+      id: 'custom-person-slot',
+      name: '窗前剪影风',
+      template: '21:9 宽幅电影感，标题「{{主标题}}」，人物描述：{{人物段}}。',
+      guidance: '',
+      usePortrait: false,
+    },
+  })
+  assert.match(prompt, /写给工程师的复盘/)
+  assert.match(prompt, /一名背对镜头的剪影站在窗前/)
 })
