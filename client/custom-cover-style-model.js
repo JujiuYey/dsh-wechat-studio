@@ -3,19 +3,20 @@
 export const DEFAULT_TEST_COVER_TITLE = '我用 AI 搭了一套自动化写作流'
 
 export function createWizardDraft(initial = {}) {
+  const src = initial && typeof initial === 'object' ? initial : {}
   return {
-    id: typeof initial.id === 'string' ? initial.id : '',
-    name: typeof initial.name === 'string' ? initial.name : '',
-    description: typeof initial.description === 'string' ? initial.description : '',
-    usePortrait: Boolean(initial.usePortrait),
-    userRequirement: typeof initial.userRequirement === 'string' ? initial.userRequirement : '',
-    template: typeof initial.template === 'string' ? initial.template : '',
-    guidance: typeof initial.guidance === 'string' ? initial.guidance : '',
-    referenceImages: Array.isArray(initial.referenceImages) ? [...initial.referenceImages] : [],
-    previewUrl: typeof initial.previewUrl === 'string' ? initial.previewUrl : null,
-    previewDraftToken: typeof initial.previewDraftToken === 'string' ? initial.previewDraftToken : null,
-    previewStale: Boolean(initial.previewStale),
-    lastTestPrompt: typeof initial.lastTestPrompt === 'string' ? initial.lastTestPrompt : '',
+    id: typeof src.id === 'string' ? src.id : '',
+    name: typeof src.name === 'string' ? src.name : '',
+    description: typeof src.description === 'string' ? src.description : '',
+    usePortrait: Boolean(src.usePortrait),
+    userRequirement: typeof src.userRequirement === 'string' ? src.userRequirement : '',
+    template: typeof src.template === 'string' ? src.template : '',
+    guidance: typeof src.guidance === 'string' ? src.guidance : '',
+    referenceImages: Array.isArray(src.referenceImages) ? [...src.referenceImages] : [],
+    previewUrl: typeof src.previewUrl === 'string' ? src.previewUrl : null,
+    previewDraftToken: typeof src.previewDraftToken === 'string' ? src.previewDraftToken : null,
+    previewStale: Boolean(src.previewStale),
+    lastTestPrompt: typeof src.lastTestPrompt === 'string' ? src.lastTestPrompt : '',
   }
 }
 
@@ -50,8 +51,9 @@ export function markPreviewStaleOnDraftChange(prev, next) {
   return false
 }
 
-export function applyTestJobToDraft(current, job) {
+export function applyTestJobToDraft(current, job, expectedJobId = null) {
   if (!current || !job || job.status !== 'succeeded' || !job.result?.draftToken) return current
+  if (expectedJobId !== null && job.jobId !== expectedJobId) return current
   return {
     ...current,
     previewDraftToken: job.result.draftToken,

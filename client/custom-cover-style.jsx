@@ -39,22 +39,29 @@ function articlePreviewMarkdown(article) {
 export function CustomCoverTestBanner({ returnTo = 'skills' }) {
   const activeJob = useStudio(s => s.coverStyles?.activeTestJob)
   const hasSession = useStudio(s => Boolean(s.customCoverWizard?.draftSession))
-  if (!activeJob || (activeJob.status !== 'running' && activeJob.status !== 'succeeded')) return null
+  if (!activeJob) return null
   const isRunning = activeJob.status === 'running'
+  const isSucceeded = activeJob.status === 'succeeded'
+  const isFailed = activeJob.status === 'failed'
+  if (!isRunning && !(hasSession && (isSucceeded || isFailed))) return null
   return (
-    <div className={`ws-custom-cover-banner ${isRunning ? 'is-running' : 'is-ready'}`} role="status">
+    <div className={`ws-custom-cover-banner ${isRunning ? 'is-running' : isFailed ? 'is-failed' : 'is-ready'}`} role="status">
       <span>
         {isRunning
           ? `自定义封面样图正在后台生成（${TEST_STAGE_LABEL[activeJob.stage] ?? '处理中…'}）`
-          : '后台试生成的自定义封面样图已就绪'}
+          : isFailed
+            ? `后台试生成未完成：${activeJob.error || '请返回检查后重试'}`
+            : '后台试生成的自定义封面样图已就绪'}
       </span>
-      <button
-        type="button"
-        className="ws-link"
-        onClick={() => openCustomCoverStyleWizard({ resume: hasSession, mode: 'create', returnTo })}
-      >
-        {isRunning ? '返回查看' : '继续编辑'}
-      </button>
+      {hasSession ? (
+        <button
+          type="button"
+          className="ws-link"
+          onClick={() => openCustomCoverStyleWizard({ resume: true, mode: 'create', returnTo })}
+        >
+          {isRunning || isFailed ? '返回查看' : '继续编辑'}
+        </button>
+      ) : null}
     </div>
   )
 }
@@ -176,16 +183,18 @@ export function CustomCoverStyleWizard() {
   const activeTestJob = coverStyles?.activeTestJob ?? null
   const testRunning = activeTestJob?.status === 'running'
 
-  const [loading, setLoading] = React.useState(mode === 'edit' && !wizard?.draftSession)
+  const [loading, setLoading] = React.useState(Boolean(mode === 'edit' && styleId && !wizard?.draftSession))
   const [step, setStep] = React.useState(() => wizard?.draftSession?.step ?? (mode === 'edit' ? 2 : 1))
   const [initialDraft, setInitialDraft] = React.useState(() => createWizardDraft(wizard?.draftSession?.initialDraft ?? {}))
   const [draft, setDraft] = React.useState(() => createWizardDraft(wizard?.draftSession?.draft ?? {}))
   const [testTitle, setTestTitle] = React.useState(() => wizard?.draftSession?.testTitle || currentArticle?.title?.trim() || DEFAULT_TEST_COVER_TITLE)
   const [resolution, setResolution] = React.useState(() => wizard?.draftSession?.resolution || '1K')
+  const [testJobId, setTestJobId] = React.useState(() => wizard?.draftSession?.testJobId ?? null)
   const [adjustment, setAdjustment] = React.useState('')
-  const [busy, setBusy] = React.useState(null) // null | 'analyze' | 'refine' | 'save' | 'compress'
+  const [busy, setBusy] = React.useState(null) // null | 'analyze' | 'refine' | 'save' | 'compress' | 'test-start'
   const [dragOver, setDragOver] = React.useState(false)
   const fileInputRef = React.useRef(null)
+  const closeRef = React.useRef(null)
 
   React.useEffect(() => {
     void loadCoverStyles()
@@ -215,17 +224,18 @@ export function CustomCoverStyleWizard() {
     return () => { cancelled = true }
   }, [mode, styleId])
 
-  // 当后台试生成任务完成时同步新样图到本地草稿
+  // 仅当后台试生成任务属于当前向导会话（jobId 匹配）时才把样图应用到草稿，防止跨会话污染
+  const ownTestJob = activeTestJob && testJobId && activeTestJob.jobId === testJobId ? activeTestJob : null
   React.useEffect(() => {
-    if (activeTestJob?.status === 'succeeded' && activeTestJob.result?.draftToken) {
+    if (ownTestJob?.status === 'succeeded' && ownTestJob.result?.draftToken) {
       setDraft(prev => {
-        if (prev.previewDraftToken === activeTestJob.result.draftToken) return prev
-        return applyTestJobToDraft(prev, activeTestJob)
+        if (prev.previewDraftToken === ownTestJob.result.draftToken) return prev
+        return applyTestJobToDraft(prev, ownTestJob, testJobId)
       })
     }
-  }, [activeTestJob?.status, activeTestJob?.result?.draftToken])
+  }, [ownTestJob?.status, ownTestJob?.result?.draftToken, testJobId])
 
-  // 同步草稿快照到会话，保证后台试生成期间关闭后仍可恢复
+  // 同步草稿快照与归属 testJobId 到会话，保证后台试生成期间关闭后仍可恢复
   React.useEffect(() => {
     if (loading) return
     updateCustomCoverWizardSession({
@@ -234,8 +244,9 @@ export function CustomCoverStyleWizard() {
       draft,
       testTitle,
       resolution,
+      testJobId,
     })
-  }, [step, initialDraft, draft, testTitle, resolution, loading])
+  }, [step, initialDraft, draft, testTitle, resolution, testJobId, loading])
 
   const patchDraft = updater => {
     setDraft(prev => {
@@ -251,28 +262,30 @@ export function CustomCoverStyleWizard() {
   const portraitMismatch = draft.template.trim() && (
     (draft.usePortrait && !hasMarkers) || (!draft.usePortrait && hasMarkers)
   )
+  const ownTestRunning = ownTestJob?.status === 'running'
 
   const handleClose = () => {
     if (busy) return
-    if (dirty || testRunning) {
-      const msg = testRunning
+    if (dirty || ownTestRunning) {
+      const msg = ownTestRunning
         ? '当前样图仍在后台试生成且草稿尚未保存，确认先关闭弹窗？（后台任务会继续完成，稍后可点「返回查看」恢复）'
         : '当前自定义风格尚未保存，确认放弃修改？'
       if (!window.confirm(msg)) return
     }
-    closeCustomCoverStyleWizard({ preserveSession: testRunning })
+    closeCustomCoverStyleWizard({ preserveSession: ownTestRunning })
   }
+  closeRef.current = handleClose
 
   React.useEffect(() => {
     const onKey = event => {
-      if (event.key === 'Escape') {
+      if (event.key === 'Escape' && !event.isComposing && event.keyCode !== 229) {
         event.preventDefault()
-        handleClose()
+        closeRef.current?.()
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  })
+  }, [])
 
   const addFiles = async files => {
     const list = Array.from(files ?? []).filter(f => f && f.type?.startsWith('image/'))
@@ -368,8 +381,9 @@ export function CustomCoverStyleWizard() {
       toast(`提示词模板至少需要包含 ${CUSTOM_COVER_STYLE_LIMITS.minSlots} 个 {{...}} 占位符。`, true)
       return
     }
+    setBusy('test-start')
     try {
-      await startCustomCoverStyleTest({
+      const job = await startCustomCoverStyleTest({
         draft: {
           name: draft.name,
           template: draft.template,
@@ -380,8 +394,11 @@ export function CustomCoverStyleWizard() {
         testMarkdown: articlePreviewMarkdown(currentArticle),
         resolution,
       })
+      if (job?.jobId) setTestJobId(job.jobId)
     } catch (err) {
       toast(err.message, true)
+    } finally {
+      setBusy(null)
     }
   }
 
@@ -415,6 +432,13 @@ export function CustomCoverStyleWizard() {
         role="dialog"
         aria-modal="true"
         aria-label={mode === 'edit' ? '编辑自定义封面风格' : '新建自定义封面风格'}
+        onPaste={e => {
+          if (step !== 1) return
+          const files = extractClipboardImageFiles(e)
+          if (!files.length) return
+          e.preventDefault()
+          void addFiles(files)
+        }}
       >
         <div className="ws-dialog-head">
           <div>
@@ -435,7 +459,7 @@ export function CustomCoverStyleWizard() {
             <span className="ws-shimmer">正在读取自定义风格详情…</span>
           </div>
         ) : step === 1 ? (
-          <form className="ws-custom-cover-step" onSubmit={onAnalyze} onPaste={e => void addFiles(extractClipboardImageFiles(e))}>
+          <form className="ws-custom-cover-step" onSubmit={onAnalyze}>
             <div className="ws-custom-cover-section">
               <div className="ws-style-field-head">
                 <span>参考封面图（可选，最多 {CUSTOM_COVER_STYLE_LIMITS.maxReferenceImages} 张）</span>
@@ -538,6 +562,7 @@ export function CustomCoverStyleWizard() {
                     type="text"
                     maxLength={CUSTOM_COVER_STYLE_LIMITS.maxName}
                     value={draft.name}
+                    disabled={busy === 'refine'}
                     placeholder="例如：黑金杂志风"
                     onChange={e => patchDraft({ name: e.target.value })}
                   />
@@ -552,6 +577,7 @@ export function CustomCoverStyleWizard() {
                     type="text"
                     maxLength={CUSTOM_COVER_STYLE_LIMITS.maxDescription}
                     value={draft.description}
+                    disabled={busy === 'refine'}
                     placeholder="显示在封面风格列表底部，概括画面和适用场景"
                     onChange={e => patchDraft({ description: e.target.value })}
                   />
@@ -561,6 +587,7 @@ export function CustomCoverStyleWizard() {
                   <input
                     type="checkbox"
                     checked={draft.usePortrait}
+                    disabled={busy === 'refine'}
                     onChange={e => patchDraft({ usePortrait: e.target.checked })}
                   />
                   <span>包含博主本人出镜（自动使用「设置 · 封面生成」中的人物参考照与服装设定）</span>
@@ -584,10 +611,11 @@ export function CustomCoverStyleWizard() {
                       type="text"
                       maxLength={CUSTOM_COVER_STYLE_LIMITS.maxRequirement}
                       value={adjustment}
+                      disabled={busy === 'refine'}
                       placeholder="哪里不像或想改？例如：背景更暖一点、去掉英文小标签、中文大字更粗"
                       onChange={e => setAdjustment(e.target.value)}
                       onKeyDown={e => {
-                        if (e.key === 'Enter') {
+                        if (e.key === 'Enter' && !e.nativeEvent.isComposing && e.keyCode !== 229) {
                           e.preventDefault()
                           void onRefine()
                         }
@@ -621,6 +649,7 @@ export function CustomCoverStyleWizard() {
                         rows={8}
                         maxLength={CUSTOM_COVER_STYLE_LIMITS.maxTemplate}
                         value={draft.template}
+                        disabled={busy === 'refine'}
                         onChange={e => patchDraft({ template: e.target.value })}
                       />
                     </label>
@@ -640,6 +669,7 @@ export function CustomCoverStyleWizard() {
                         rows={3}
                         maxLength={CUSTOM_COVER_STYLE_LIMITS.maxGuidance}
                         value={draft.guidance}
+                        disabled={busy === 'refine'}
                         onChange={e => patchDraft({ guidance: e.target.value })}
                       />
                     </label>
@@ -666,8 +696,8 @@ export function CustomCoverStyleWizard() {
                       {TEST_STAGE_LABEL[activeTestJob.stage] ?? '正在试生成样图…'}
                     </p>
                   ) : null}
-                  {activeTestJob?.status === 'failed' && activeTestJob.error ? (
-                    <p className="ws-warn ws-small" role="status">{activeTestJob.error}</p>
+                  {ownTestJob?.status === 'failed' && ownTestJob.error ? (
+                    <p className="ws-warn ws-small" role="status">{ownTestJob.error}</p>
                   ) : null}
                 </div>
 
@@ -704,7 +734,7 @@ export function CustomCoverStyleWizard() {
                     disabled={testRunning || Boolean(busy) || slots.length < CUSTOM_COVER_STYLE_LIMITS.minSlots}
                     onClick={() => void onTestGenerate()}
                   >
-                    {testRunning ? '正在试生成…' : draft.previewDraftToken ? '重新试生成样图' : '试生成样图'}
+                    {busy === 'test-start' ? '正在提交…' : testRunning ? '正在试生成…' : draft.previewDraftToken ? '重新试生成样图' : '试生成样图'}
                   </button>
                 </div>
 

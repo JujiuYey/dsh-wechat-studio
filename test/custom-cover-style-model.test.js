@@ -70,6 +70,15 @@ test('markPreviewStaleOnDraftChange 与 applyTestJobToDraft：改模板/开关/�
   assert.equal(applied.previewDraftToken, '11111111-1111-4111-8111-111111111111')
   assert.equal(applied.previewUrl, 'wechat-studio/cover-styles/draft-preview?token=11111111-1111-4111-8111-111111111111')
   assert.equal(applied.lastTestPrompt, 'final prompt')
+
+  // 跨会话隔离：当 expectedJobId 不匹配或为 null/空字符串时，不污染无关草稿
+  const untouched = applyTestJobToDraft(withPreview, {
+    jobId: 'job-other',
+    status: 'succeeded',
+    result: { draftToken: '99999999-9999-4999-8999-999999999999', previewUrl: 'wechat-studio/cover-styles/draft-preview?token=9999' },
+  }, 'job-mine')
+  assert.equal(untouched, withPreview)
+  assert.equal(createWizardDraft(null).name, '')
 })
 
 test('buildRefinePayload：强制使用用户当前最新编辑态草稿并携带会话参考图', () => {
