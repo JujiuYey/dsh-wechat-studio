@@ -7,11 +7,12 @@ import campaignPreview from './assets/cover-styles/campaign.webp'
 import kineticPreview from './assets/cover-styles/kinetic.webp'
 import grungePreview from './assets/cover-styles/grunge.webp'
 import feltPreview from './assets/cover-styles/felt.webp'
-import { COVER_STYLES } from '../src/cover-styles.js'
+import { COVER_STYLES, CUSTOM_COVER_STYLE_LIMITS, resolveCoverStyleName } from '../src/cover-styles.js'
 // 稿面：左边对话改稿，中间是稿子和纸边批注，右边是标题、朱雀质检和导出。
 import React from 'react'
 import { cardMarkdown, emphasisFormats, formatSelection, insertFormats } from './editor-format.js'
-import { act, copyDetectionText, copyMarkdown, copyText, countCurrentParagraphDrafts, getState, loadLayout, loadModels, loadRevisions, loadSettings, loadSkills, loadStyleProfile, loadVersion, openStyleWizard, previewMarkdownReimport, reimportMarkdown, rememberArticleView, saveSettings, setState, testWechat, testZhuque, toast, uploadImage, uploadPortrait, uploadReport, useStudio } from './state.js'
+import { act, copyDetectionText, copyMarkdown, copyText, countCurrentParagraphDrafts, deleteCustomCoverStyle, getState, loadCoverStyles, loadLayout, loadModels, loadRevisions, loadSettings, loadSkills, loadStyleProfile, loadVersion, openCustomCoverStyleWizard, openStyleWizard, previewMarkdownReimport, reimportMarkdown, rememberArticleView, saveSettings, setState, testWechat, testZhuque, toast, uploadImage, uploadPortrait, uploadReport, useStudio } from './state.js'
+import { CustomCoverStyleCard, CustomCoverStyleWizard, CustomCoverTestBanner } from './custom-cover-style.jsx'
 import { hasUnsavedDeriveDrafts } from './derive-draft-model.js'
 import { DeriveView } from './derive.jsx'
 import { isDraftReady, readMinutes, summarizeDraftHome } from './draft-home-model.js'
@@ -890,22 +891,43 @@ function CoverOptionGroup({ label, name, options, value, onChange, disabled }) {
 
 function CoverStyleDialog({ article }) {
   const settings = useStudio(s => s.settings)
+  const coverStylesState = useStudio(s => s.coverStyles)
+  const selectedCoverStyleId = useStudio(s => s.selectedCoverStyleId)
   const [settingsStatus, setSettingsStatus] = React.useState('loading')
   const readCoverSettings = React.useCallback(async () => {
     setSettingsStatus('loading')
-    setSettingsStatus(await loadSettings() ? 'ready' : 'failed')
+    const [ok] = await Promise.all([loadSettings(), loadCoverStyles()])
+    setSettingsStatus(ok ? 'ready' : 'failed')
   }, [])
   React.useEffect(() => { void readCoverSettings() }, [readCoverSettings])
+  const stylesList = coverStylesState?.styles?.length ? coverStylesState.styles : COVER_STYLES
+  const customCount = stylesList.filter(item => item.source === 'custom').length
+  const atLimit = customCount >= CUSTOM_COVER_STYLE_LIMITS.maxStyles
   const provider = settingsStatus === 'ready' ? settings?.coverProvider : null
   const formats = providerFormats(provider)
-  const [style, setStyle] = React.useState(article.cover?.style ?? 'classic')
+  const [style, setStyle] = React.useState(selectedCoverStyleId ?? article.cover?.style ?? 'classic')
   const [resolution, setResolution] = React.useState(article.cover?.resolution ?? '2K')
   const [count, setCount] = React.useState(article.cover?.count ?? 1)
   const [format, setFormat] = React.useState(article.cover?.format ?? 'png')
   const [busy, setBusy] = React.useState(false)
+  const [deletingId, setDeletingId] = React.useState(null)
   const scrimRef = React.useRef(null)
   const [zoom, setZoom] = React.useState(null)
   const effectiveFormat = formats.includes(format) ? format : 'png'
+
+  React.useEffect(() => {
+    if (selectedCoverStyleId && stylesList.some(item => item.id === selectedCoverStyleId)) {
+      setStyle(selectedCoverStyleId)
+      setState({ selectedCoverStyleId: null })
+    }
+  }, [selectedCoverStyleId, stylesList])
+
+  React.useEffect(() => {
+    if (coverStylesState && !coverStylesState.loading && !stylesList.some(item => item.id === style)) {
+      setStyle('classic')
+    }
+  }, [coverStylesState, stylesList, style])
+
   const close = () => { if (!busy) setState({ dialog: null }) }
   const submit = async event => {
     event.preventDefault()
@@ -915,6 +937,24 @@ function CoverStyleDialog({ article }) {
     setBusy(false)
     if (ok) setState({ dialog: null })
   }
+  const onDeleteCustom = async (event, item) => {
+    event.preventDefault()
+    event.stopPropagation()
+    if (busy || deletingId) return
+    if (!window.confirm(`确定删除自定义封面风格「${item.name}」吗？\n删除后不影响已生成的文章封面，但后续无法再用此风格。`)) return
+    setDeletingId(item.id)
+    setZoom(null)
+    try {
+      await deleteCustomCoverStyle(item.id)
+      if (style === item.id) setStyle('classic')
+      toast(`已删除「${item.name}」`)
+    } catch (err) {
+      toast(err.message, true)
+    } finally {
+      setDeletingId(null)
+    }
+  }
+  const previewSrcOf = item => (item.source === 'custom' ? item.previewUrl : coverStylePreviews[item.id])
   return (
     <div className="ws-scrim" ref={scrimRef} onMouseDown={event => { if (event.target === event.currentTarget) close() }}>
       <form className="ws-dialog ws-cover-dialog" role="dialog" aria-modal="true" aria-label="选择封面风格" onSubmit={submit}>
@@ -922,22 +962,69 @@ function CoverStyleDialog({ article }) {
           <h2 className="ws-dialog-title">选择封面风格</h2>
           <button type="button" className="ws-icon-btn" disabled={busy} aria-label="关闭" onClick={close}><Icon name="close" /></button>
         </div>
+        <CustomCoverTestBanner returnTo="cover" />
         <div className="ws-cover-dialog-body">
           <fieldset className="ws-cover-gallery" disabled={busy}>
             <legend>风格</legend>
+            {coverStylesState?.warnings?.length ? (
+              <p className="ws-warn ws-small" role="status">{coverStylesState.warnings.join(' ')}</p>
+            ) : null}
             <div className="ws-cover-style-grid">
-              {COVER_STYLES.map(item => (
-                <label className={`ws-choice ws-cover-style ${style === item.id ? 'is-on' : ''}`} key={item.id}
-                  onMouseEnter={event => setZoom({ el: event.currentTarget, src: coverStylePreviews[item.id] })} onMouseLeave={() => setZoom(null)}>
-                  <input type="radio" aria-label={item.name} name="cover-style" value={item.id} checked={style === item.id} onChange={() => setStyle(item.id)} />
-                  <span className="ws-cover-style-body">
-                    <img src={coverStylePreviews[item.id]} alt="" />
-                    <strong>{item.name}</strong>
-                  </span>
-                </label>
-              ))}
+              {stylesList.map(item => {
+                const isCustom = item.source === 'custom'
+                const src = previewSrcOf(item)
+                return (
+                  <label className={`ws-choice ws-cover-style ${style === item.id ? 'is-on' : ''} ${isCustom ? 'is-custom' : ''}`} key={item.id}
+                    onMouseEnter={event => { if (src) setZoom({ el: event.currentTarget, src }) }} onMouseLeave={() => setZoom(null)}>
+                    <input type="radio" aria-label={item.name} name="cover-style" value={item.id} checked={style === item.id} onChange={() => setStyle(item.id)} />
+                    <span className="ws-cover-style-body">
+                      <span className="ws-cover-style-media">
+                        {src ? <img src={src} alt="" /> : <span className="ws-cover-placeholder-art"><span>{item.name}</span></span>}
+                        {isCustom ? <span className="ws-cover-badge">自定义</span> : null}
+                      </span>
+                      <span className="ws-cover-style-foot">
+                        <strong>{item.name}</strong>
+                        {isCustom ? (
+                          <span className="ws-cover-style-actions">
+                            <button
+                              type="button"
+                              className="ws-link"
+                              disabled={busy || Boolean(deletingId)}
+                              onClick={event => {
+                                event.preventDefault()
+                                event.stopPropagation()
+                                setZoom(null)
+                                openCustomCoverStyleWizard({ mode: 'edit', styleId: item.id, returnTo: 'cover' })
+                              }}
+                            >编辑</button>
+                            <button
+                              type="button"
+                              className="ws-link is-danger"
+                              disabled={busy || deletingId === item.id}
+                              onClick={event => void onDeleteCustom(event, item)}
+                            >{deletingId === item.id ? '删除中' : '删除'}</button>
+                          </span>
+                        ) : null}
+                      </span>
+                    </span>
+                  </label>
+                )
+              })}
+              <button
+                type="button"
+                className="ws-cover-style-add"
+                disabled={busy || atLimit}
+                title={atLimit ? `已达 ${CUSTOM_COVER_STYLE_LIMITS.maxStyles} 套自定义风格上限` : '上传参考图或写诉求，新建自定义封面风格'}
+                onClick={() => {
+                  setZoom(null)
+                  openCustomCoverStyleWizard({ mode: 'create', returnTo: 'cover' })
+                }}
+              >
+                <span className="ws-cover-style-add-plus">+</span>
+                <strong>{atLimit ? `已达 ${CUSTOM_COVER_STYLE_LIMITS.maxStyles} 套上限` : '自定义风格'}</strong>
+              </button>
             </div>
-            <p className="ws-cover-style-description">{COVER_STYLES.find(item => item.id === style)?.description}</p>
+            <p className="ws-cover-style-description">{stylesList.find(item => item.id === style)?.description}</p>
           </fieldset>
           <div className="ws-cover-options">
             <CoverOptionGroup label="选择分辨率" name="cover-resolution" options={COVER_RESOLUTIONS}
@@ -973,13 +1060,17 @@ function CoverJobProgress({ job }) {
 
 function CoverHistoryDialog({ article }) {
   const pending = useStudio(s => s.pending)
+  const coverStyles = useStudio(s => s.coverStyles)
+  React.useEffect(() => {
+    if (!coverStyles) void loadCoverStyles()
+  }, [])
   const runs = article.coverRuns ?? []
   const historyAvailable = Array.isArray(article.coverRuns)
   const [selectedId, setSelectedId] = React.useState(null)
   const scrimRef = React.useRef(null)
   const [zoom, setZoom] = React.useState(null)
   const run = runs.find(item => item.id === selectedId) ?? runs.at(-1)
-  const styleName = item => COVER_STYLES.find(style => style.id === item.style)?.name ?? '封面'
+  const styleName = item => resolveCoverStyleName(item.style, coverStyles?.styles, item.styleName)
   const dateLabel = value => new Date(value).toLocaleString('zh-CN', {
     month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false,
   })
@@ -1990,7 +2081,7 @@ const SKILL_INFO = {
   humanizer: { name: '去 AI 味', use: '改写朱雀标红的段落' },
   zhuque: { name: '朱雀流程', use: '按报告逐段改，什么时候停手' },
   banner: { name: '开头横幅', use: '按文章写横幅规格' },
-  cover: { name: '封面生成', use: '按文章和所选风格填写封面提示词。技能、六套风格模板和禁用词表都在内置技能目录。' },
+  cover: { name: '封面生成', use: '按文章和所选风格填写封面提示词。内置 7 套风格模板与禁用词表在内置技能目录；自定义封面风格可在上方卡片或封面选择弹窗中新建管理。' },
   'inline-diagram': { name: '正文插图', use: '识别插图位置，从技能目录动态读取全部风格。可在覆盖目录中增加或覆盖风格文件。' },
   'wechat-svg-cards': { name: '公众号动画卡片', use: '按段落生成概念、步骤、对比、数据与演示卡，使用同一排版引擎导出 SMIL 动画。' },
   'repurpose-thread': { name: '一稿多发 · 串推', use: '从母稿挑选并压缩核心观点，生成即刻动态串或 X 串推。' },
@@ -2046,6 +2137,7 @@ function SkillsView() {
           </div>
         </header>
         <WritingStyleCard />
+        <CustomCoverStyleCard />
         <p className="ws-page-lead">这里显示插件当前使用的技能。写作、标题、去 AI 味、朱雀流程、开头横幅和一稿多发可以通过下方目录覆盖。封面和正文插图使用目录式技能；正文插图支持在覆盖目录中增加或覆盖风格。</p>
         <div className="ws-skill-list">
           {skills.skills.map(item => (
@@ -2511,6 +2603,7 @@ export function Studio({ onOpenPlugin }) {
   const module = useStudio(s => s.module)
   const paperHome = useStudio(s => s.paperHome)
   const dialog = useStudio(s => s.dialog)
+  const customCoverWizard = useStudio(s => s.customCoverWizard)
   const revisionBlockId = useStudio(s => s.revisionBlockId)
   const reimportArticleId = useStudio(s => s.reimportArticleId)
   const paperSession = useStudio(s => s.paperSession)
@@ -2541,6 +2634,7 @@ export function Studio({ onOpenPlugin }) {
       {dialog === 'reimport' && data?.current?.id === reimportArticleId ? <ReimportDialog key={reimportArticleId} article={data.current} /> : null}
       {dialog === 'new' ? <NewDialog /> : null}
       {dialog === 'style-wizard' ? <WritingStyleWizard /> : null}
+      {customCoverWizard?.open ? <CustomCoverStyleWizard /> : null}
       {dialog === 'settings' ? <SettingsDialog onOpenPlugin={onOpenPlugin} /> : null}
       {dialog === 'model' ? <ModelDialog /> : null}
       {note ? <div className={`ws-toast ${note.error ? 'is-error' : ''}`} role="status">{note.text}</div> : null}
