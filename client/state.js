@@ -3,6 +3,7 @@ import React from 'react'
 import { DERIVE_LIMITS } from '../src/derive-shared.js'
 import { isNewerRelease } from '../src/version.js'
 import { deriveDraftKey, mergeRedesignedXhsCardDraft, xhsCardDraftSignature } from './derive-draft-model.js'
+import { applyTestJobToDraft } from './custom-cover-style-model.js'
 
 const BASE = 'wechat-studio/'
 
@@ -10,7 +11,7 @@ export function countCurrentParagraphDrafts(blocks, drafts) {
   return blocks.filter(block => drafts.has(block.id)).length
 }
 
-let snap = { data: null, error: null, view: 'paper', paperHome: true, dialog: null, toast: null, editing: null, layout: null, deriveDrafts: {}, pending: null, chatOpen: true, bannerTried: {}, module: 'paper', skills: null, style: null, styleWizardStep: 1, styleWizardReturnTo: null, newDialogDraft: null, settings: null, update: null, insights: null, insightsRange: 'all', insightsError: null, insightsRulePreview: null, svgCardCandidate: null }
+let snap = { data: null, error: null, view: 'paper', paperHome: true, dialog: null, toast: null, editing: null, layout: null, deriveDrafts: {}, pending: null, chatOpen: true, bannerTried: {}, module: 'paper', skills: null, style: null, styleWizardStep: 1, styleWizardReturnTo: null, newDialogDraft: null, settings: null, update: null, insights: null, insightsRange: 'all', insightsError: null, insightsRulePreview: null, svgCardCandidate: null, coverStyles: null, customCoverWizard: { open: false, mode: 'create', styleId: null, returnTo: null, draftSession: null }, selectedCoverStyleId: null }
 const listeners = new Set()
 let timer = null
 
@@ -45,6 +46,7 @@ async function request(path, options) {
     const error = new Error(body?.error || `请求失败（${res.status}）`)
     error.status = res.status
     if (body?.code) error.code = body.code
+    if (body?.activeJobId) error.activeJobId = body.activeJobId
     throw error
   }
   return body
@@ -593,3 +595,196 @@ export async function applyInsightRule(ruleId) {
 }
 
 export const closeInsightRule = () => setState({ insightsRulePreview: null })
+
+// ---------- 自定义封面风格 ----------
+
+let coverStyleTestTimer = null
+
+function stopCoverStyleTestPoll() {
+  if (coverStyleTestTimer) {
+    clearTimeout(coverStyleTestTimer)
+    coverStyleTestTimer = null
+  }
+}
+
+function updateActiveTestJob(job) {
+  setState(s => {
+    const nextCoverStyles = s.coverStyles
+      ? { ...s.coverStyles, activeTestJob: job }
+      : { styles: [], warnings: [], visionSupport: null, activeTestJob: job, loading: false, error: null }
+    let nextWizard = s.customCoverWizard
+    if (job?.status === 'succeeded' && nextWizard?.draftSession?.draft) {
+      const updatedDraft = applyTestJobToDraft(nextWizard.draftSession.draft, job)
+      nextWizard = {
+        ...nextWizard,
+        draftSession: {
+          ...nextWizard.draftSession,
+          draft: updatedDraft,
+          testJobId: job.jobId,
+        },
+      }
+    }
+    return { coverStyles: nextCoverStyles, customCoverWizard: nextWizard }
+  })
+}
+
+export async function pollCustomCoverStyleTest(jobId = '') {
+  stopCoverStyleTestPoll()
+  try {
+    const query = jobId ? `?${new URLSearchParams({ jobId })}` : ''
+    const job = await request(`cover-styles/test-status${query}`)
+    updateActiveTestJob(job)
+    if (job?.status === 'running') {
+      coverStyleTestTimer = setTimeout(() => { void pollCustomCoverStyleTest(job.jobId) }, 900)
+    } else if (job?.status === 'succeeded') {
+      if (!snap.customCoverWizard?.open) toast('自定义封面样图已试生成，可返回继续编辑')
+    } else if (job?.status === 'failed' && job.error) {
+      toast(job.error, true)
+    }
+    return job
+  } catch (err) {
+    if (err.status === 404) {
+      updateActiveTestJob(null)
+      return null
+    }
+    toast(err.message, true)
+    return null
+  }
+}
+
+export async function loadCoverStyles() {
+  setState(s => ({
+    coverStyles: {
+      styles: s.coverStyles?.styles ?? [],
+      warnings: s.coverStyles?.warnings ?? [],
+      visionSupport: s.coverStyles?.visionSupport ?? null,
+      activeTestJob: s.coverStyles?.activeTestJob ?? null,
+      loading: true,
+      error: null,
+    },
+  }))
+  try {
+    const res = await request('cover-styles')
+    setState({
+      coverStyles: {
+        styles: Array.isArray(res.styles) ? res.styles : [],
+        warnings: Array.isArray(res.warnings) ? res.warnings : [],
+        visionSupport: res.visionSupport ?? null,
+        activeTestJob: res.activeTestJob ?? null,
+        loading: false,
+        error: null,
+      },
+    })
+    if (res.activeTestJob?.status === 'running') {
+      stopCoverStyleTestPoll()
+      coverStyleTestTimer = setTimeout(() => { void pollCustomCoverStyleTest(res.activeTestJob.jobId) }, 900)
+    }
+    return res
+  } catch (err) {
+    setState(s => ({
+      coverStyles: {
+        styles: s.coverStyles?.styles ?? [],
+        warnings: s.coverStyles?.warnings ?? [],
+        visionSupport: s.coverStyles?.visionSupport ?? null,
+        activeTestJob: s.coverStyles?.activeTestJob ?? null,
+        loading: false,
+        error: err.message,
+      },
+    }))
+    return null
+  }
+}
+
+export async function loadCustomCoverStyle(id) {
+  const res = await request(`cover-styles/item?${new URLSearchParams({ id })}`)
+  return res.style
+}
+
+export async function analyzeCustomCoverStyle(payload) {
+  return postJson('cover-styles/analyze', payload)
+}
+
+export async function startCustomCoverStyleTest(payload) {
+  try {
+    const job = await postJson('cover-styles/test-generate', payload)
+    updateActiveTestJob(job)
+    stopCoverStyleTestPoll()
+    coverStyleTestTimer = setTimeout(() => { void pollCustomCoverStyleTest(job.jobId) }, 900)
+    return job
+  } catch (err) {
+    if (err.status === 409 && err.activeJobId) {
+      toast('已有样图正在后台试生成，已自动恢复进度查看。')
+      return pollCustomCoverStyleTest(err.activeJobId)
+    }
+    throw err
+  }
+}
+
+export async function saveCustomCoverStyle(payload) {
+  const res = await postJson('cover-styles/save', payload)
+  setState(s => ({
+    coverStyles: {
+      styles: Array.isArray(res.styles) ? res.styles : [],
+      warnings: Array.isArray(res.warnings) ? res.warnings : [],
+      visionSupport: s.coverStyles?.visionSupport ?? null,
+      activeTestJob: null,
+      loading: false,
+      error: null,
+    },
+    selectedCoverStyleId: res.style?.id ?? null,
+  }))
+  return res
+}
+
+export async function deleteCustomCoverStyle(id) {
+  const res = await postJson('cover-styles/delete', { id })
+  setState(s => ({
+    coverStyles: {
+      styles: Array.isArray(res.styles) ? res.styles : [],
+      warnings: Array.isArray(res.warnings) ? res.warnings : [],
+      visionSupport: s.coverStyles?.visionSupport ?? null,
+      activeTestJob: s.coverStyles?.activeTestJob ?? null,
+      loading: false,
+      error: null,
+    },
+    selectedCoverStyleId: s.selectedCoverStyleId === id ? null : s.selectedCoverStyleId,
+  }))
+  return res
+}
+
+export function openCustomCoverStyleWizard({ mode = 'create', styleId = null, returnTo = null, resume = false } = {}) {
+  setState(s => ({
+    dialog: returnTo === 'cover' ? null : s.dialog,
+    customCoverWizard: resume && s.customCoverWizard?.draftSession
+      ? { ...s.customCoverWizard, open: true, returnTo: returnTo ?? s.customCoverWizard.returnTo }
+      : {
+        open: true,
+        mode,
+        styleId,
+        returnTo,
+        draftSession: null,
+      },
+  }))
+}
+
+export function updateCustomCoverWizardSession(draftSession) {
+  setState(s => ({
+    customCoverWizard: {
+      ...s.customCoverWizard,
+      draftSession,
+    },
+  }))
+}
+
+export function closeCustomCoverStyleWizard({ preserveSession = false } = {}) {
+  setState(s => {
+    const returnTo = s.customCoverWizard?.returnTo
+    const reopenCover = returnTo === 'cover' && Boolean(s.data?.current)
+    return {
+      dialog: reopenCover ? 'cover' : s.dialog,
+      customCoverWizard: preserveSession
+        ? { ...s.customCoverWizard, open: false }
+        : { open: false, mode: 'create', styleId: null, returnTo: null, draftSession: null },
+    }
+  })
+}
