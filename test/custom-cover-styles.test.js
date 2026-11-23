@@ -348,3 +348,60 @@ test('兜底预览策略：新建带参考图裁切为 47:20，极端尺寸降�
   })
   assert.equal(degraded.style.previewFile, null)
 })
+
+test('修复回归：缺失 meta.json 返 404、更新前软链拒绝、超长上限与非字符串模板校验', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'ws-custom-style-fix1-'))
+  // 超长与非字符串校验
+  assert.throws(() => validateCustomStyleInput({ name: '合法', description: '描', userRequirement: '诉'.repeat(1001), template: VALID_TEMPLATE }, []), err => err.status === 400)
+  assert.throws(() => validateCustomStyleInput({ name: '合法', description: '描', template: '{{a}} {{b}} ' + '模'.repeat(8000) }, []), err => err.status === 400)
+  assert.throws(() => validateCustomStyleInput({ name: '合法', description: '描', template: VALID_TEMPLATE, guidance: '指'.repeat(4001) }, []), err => err.status === 400)
+  assert.throws(() => validateCustomStyleInput({ name: '合法', description: '描', template: ['{{a}}', '{{b}}'] }, []), err => err.status === 400)
+
+  // 缺失 meta.json 的目录调用 readCustomStylePreview 与 update 必须抛带 HTTP status 的错误
+  const brokenDir = join(root, 'cover-styles', 'custom-nometa11')
+  await mkdir(brokenDir, { recursive: true })
+  await assert.rejects(readCustomStylePreview(root, 'custom-nometa11'), err => err.status === 404)
+  await assert.rejects(
+    saveCustomCoverStyle(root, { id: 'custom-nometa11', name: '修', description: '描', template: VALID_TEMPLATE }),
+    err => err.status === 404,
+  )
+  await writeFile(join(brokenDir, 'meta.json'), '{bad json')
+  await writeFile(join(brokenDir, 'template.txt'), VALID_TEMPLATE)
+  await assert.rejects(
+    saveCustomCoverStyle(root, { id: 'custom-nometa11', name: '修', description: '描', template: VALID_TEMPLATE }),
+    err => err.status === 400,
+  )
+
+  // 更新前 guidance.txt 或旧预览图被替换为符号链接 -> 拒绝跟随
+  const secretTxt = join(root, 'secret.txt')
+  await writeFile(secretTxt, 'secret')
+  const { draftToken: d1 } = await saveDraftPreview(root, makePng(94, 40), 'png')
+  const saved = await saveCustomCoverStyle(root, {
+    name: '软链更新测试',
+    description: '描',
+    template: VALID_TEMPLATE,
+    guidance: '初始指引',
+    previewDraftToken: d1,
+  })
+  const styleDir = join(root, 'cover-styles', saved.style.id)
+  const fs = await import('node:fs/promises')
+  await fs.unlink(join(styleDir, 'guidance.txt'))
+  await symlink(secretTxt, join(styleDir, 'guidance.txt'))
+  await assert.rejects(
+    saveCustomCoverStyle(root, { id: saved.style.id, name: '改', description: '描', template: VALID_TEMPLATE }),
+    err => err.status === 400,
+  )
+
+  // 恢复 guidance.txt，将 preview.png 换成软链，带新同名 png 更新时同样拒绝
+  await fs.unlink(join(styleDir, 'guidance.txt'))
+  await writeFile(join(styleDir, 'guidance.txt'), '初始指引')
+  const outsidePng = join(root, 'outside.png')
+  await writeFile(outsidePng, makePng(94, 40))
+  await fs.unlink(join(styleDir, 'preview.png'))
+  await symlink(outsidePng, join(styleDir, 'preview.png'))
+  const { draftToken: d2 } = await saveDraftPreview(root, makePng(94, 40), 'png')
+  await assert.rejects(
+    saveCustomCoverStyle(root, { id: saved.style.id, name: '改', description: '描', template: VALID_TEMPLATE, previewDraftToken: d2 }),
+    err => err.status === 400,
+  )
+})

@@ -61,7 +61,7 @@ export function detectImageContentType(buffer) {
 }
 
 function normalizeMultiline(value) {
-  return String(value ?? '').replace(/\r\n?/g, '\n').trim()
+  return typeof value === 'string' ? value.replace(/\r\n?/g, '\n').trim() : ''
 }
 
 export function validateCustomStyleInput(input, blocklistTerms = []) {
@@ -267,8 +267,9 @@ export async function saveDraftPreview(root, imageBuffer, format = 'png') {
   const ext = actualFormat === 'jpeg' ? 'jpg' : 'png'
   const dir = draftsRoot(root)
   await mkdir(dir, { recursive: true, mode: 0o700 })
+  const dirReal = await assertDirNoSymlink(dir, null)
   const draftToken = randomUUID()
-  await writeFile(join(dir, `${draftToken}.${ext}`), imageBuffer, { mode: 0o600 })
+  await writeFile(join(dirReal, `${draftToken}.${ext}`), imageBuffer, { mode: 0o600 })
   await pruneExpiredDrafts(root).catch(() => {})
   return { draftToken, format: actualFormat }
 }
@@ -306,6 +307,7 @@ export async function readDraftPreview(root, token) {
     buffer,
     contentType,
     format: contentType === 'image/jpeg' ? 'jpeg' : 'png',
+    path,
   }
 }
 
@@ -327,11 +329,13 @@ export async function readCustomStylePreview(root, id) {
     throw err
   }
   const metaPath = join(styleDirReal, 'meta.json')
-  await assertRegularNoSymlink(metaPath, styleDirReal)
   let meta
   try {
+    await assertRegularNoSymlink(metaPath, styleDirReal)
     meta = JSON.parse(await readFile(metaPath, 'utf8'))
-  } catch {
+  } catch (err) {
+    if (err.status) throw err
+    if (err.code === 'ENOENT') throw httpError(404, '自定义封面风格元数据不存在。')
     throw httpError(404, '自定义封面风格元数据已损坏。')
   }
   const previewName = meta?.previewFile
@@ -409,13 +413,12 @@ export async function saveCustomCoverStyle(root, input, opts = {}) {
   let newPreview = null
   let consumedDraftPath = null
   if (input?.previewDraftToken) {
-    const draftInfo = await resolveDraftPath(root, input.previewDraftToken)
     const draft = await readDraftPreview(root, input.previewDraftToken)
     newPreview = {
       buffer: draft.buffer,
       previewFile: draft.format === 'jpeg' ? 'preview.jpg' : 'preview.png',
     }
-    consumedDraftPath = draftInfo.path
+    consumedDraftPath = draft.path
   } else if (input?.fallbackReferenceImage) {
     newPreview = await prepareFallbackPreview(input.fallbackReferenceImage)
   }
@@ -477,16 +480,41 @@ export async function saveCustomCoverStyle(root, input, opts = {}) {
     const metaPath = join(targetDirReal, 'meta.json')
     const templatePath = join(targetDirReal, 'template.txt')
     const guidancePath = join(targetDirReal, 'guidance.txt')
-    await assertRegularNoSymlink(metaPath, targetDirReal)
-    await assertRegularNoSymlink(templatePath, targetDirReal)
-    const oldMetaRaw = await readFile(metaPath, 'utf8')
-    const oldTemplateRaw = await readFile(templatePath, 'utf8')
-    const oldGuidanceRaw = await readFile(guidancePath, 'utf8').catch(err => (err.code === 'ENOENT' ? null : Promise.reject(err)))
-    const prevMeta = JSON.parse(oldMetaRaw)
+    let oldMetaRaw
+    let oldTemplateRaw
+    let prevMeta
+    try {
+      await assertRegularNoSymlink(metaPath, targetDirReal)
+      await assertRegularNoSymlink(templatePath, targetDirReal)
+      oldMetaRaw = await readFile(metaPath, 'utf8')
+      oldTemplateRaw = await readFile(templatePath, 'utf8')
+      prevMeta = JSON.parse(oldMetaRaw)
+      if (!prevMeta || typeof prevMeta !== 'object' || Array.isArray(prevMeta)) {
+        throw httpError(400, '自定义封面风格元数据已损坏。')
+      }
+    } catch (err) {
+      if (err.status) throw err
+      if (err.code === 'ENOENT') throw httpError(404, '要编辑的自定义封面风格文件缺失。')
+      throw httpError(400, '要编辑的自定义封面风格元数据已损坏。')
+    }
+    let oldGuidanceRaw = null
+    try {
+      await assertRegularNoSymlink(guidancePath, targetDirReal)
+      oldGuidanceRaw = await readFile(guidancePath, 'utf8')
+    } catch (err) {
+      if (err.code !== 'ENOENT') throw err
+    }
     const oldPreviewFile = safePreviewFileName(prevMeta?.previewFile)
-    const oldPreviewBuf = newPreview && oldPreviewFile === newPreview.previewFile
-      ? await readFile(join(targetDirReal, oldPreviewFile)).catch(() => null)
-      : null
+    let oldPreviewBuf = null
+    if (newPreview && oldPreviewFile === newPreview.previewFile) {
+      const oldPreviewPath = join(targetDirReal, oldPreviewFile)
+      try {
+        await assertRegularNoSymlink(oldPreviewPath, targetDirReal)
+        oldPreviewBuf = await readFile(oldPreviewPath)
+      } catch (err) {
+        if (err.code !== 'ENOENT') throw err
+      }
+    }
 
     const nextPreviewFile = newPreview ? newPreview.previewFile : oldPreviewFile
     const meta = {
@@ -548,7 +576,10 @@ export async function saveCustomCoverStyle(root, input, opts = {}) {
           else if (oldPreviewFile !== newPreview.previewFile) await unlink(join(targetDirReal, newPreview.previewFile)).catch(() => {})
         }
         if (templateReplaced) await writeFile(templatePath, oldTemplateRaw, { mode: 0o600 }).catch(() => {})
-        if (guidanceReplaced && oldGuidanceRaw !== null) await writeFile(guidancePath, oldGuidanceRaw, { mode: 0o600 }).catch(() => {})
+        if (guidanceReplaced) {
+          if (oldGuidanceRaw !== null) await writeFile(guidancePath, oldGuidanceRaw, { mode: 0o600 }).catch(() => {})
+          else await unlink(guidancePath).catch(() => {})
+        }
       }
       throw err
     }
