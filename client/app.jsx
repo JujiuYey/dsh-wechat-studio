@@ -966,6 +966,9 @@ function CoverStyleDialog({ article }) {
         <div className="ws-cover-dialog-body">
           <fieldset className="ws-cover-gallery" disabled={busy}>
             <legend>风格</legend>
+            {coverStylesState?.error ? (
+              <p className="ws-warn ws-small" role="status">读取自定义封面风格失败：{coverStylesState.error}</p>
+            ) : null}
             {coverStylesState?.warnings?.length ? (
               <p className="ws-warn ws-small" role="status">{coverStylesState.warnings.join(' ')}</p>
             ) : null}
