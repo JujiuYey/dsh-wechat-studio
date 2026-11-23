@@ -297,10 +297,10 @@ function image(src, alt, T) {
   const fr = { mag: 'border-radius:0;', min: 'border-radius:0;', geek: `border-radius:6px;border:1px solid ${BORDER};box-sizing:border-box;`, bold: 'border-radius:14px;box-shadow:0 6px 20px rgba(0,0,0,0.10);' }[T.st] ?? 'border-radius:8px;'
   if (T.st === 'neo') {
     const cap = alt && !isPlainAlt(alt) ? caption(esc(alt), T, 14, 0) : ''
-    return `<section style="margin:26px 0;text-align:center;"><img src="${src}" style="display:block;width:100%;max-width:100%;border-radius:14px;box-shadow:0 12px 32px rgba(17,24,39,0.10);"/>${cap}</section>`
+    return `<section style="margin:26px 0;text-align:center;"><img src="${src}" style="display:inline-block;width:100%;max-width:100%;vertical-align:top;border-radius:14px;box-shadow:0 12px 32px rgba(17,24,39,0.10);"/>${cap}</section>`
   }
   const cap = alt && !isPlainAlt(alt) ? caption(esc(alt), T, 8, 0) : ''
-  return `<section style="margin:24px 0;text-align:center;"><img src="${src}" style="display:block;width:100%;max-width:100%;margin:0 auto;${fr}"/>${cap}</section>`
+  return `<section style="margin:24px 0;text-align:center;"><img src="${src}" style="display:inline-block;width:100%;max-width:100%;vertical-align:top;${fr}"/>${cap}</section>`
 }
 
 /** 图注：灰色小字。跟在图片或视频下面的一行短说明 */

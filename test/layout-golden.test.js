@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { readFile, readdir } from 'node:fs/promises'
 import { test } from 'node:test'
-import { renderPage } from '../vendor/layout/layout.js'
+import { renderFragment, renderPage, STYLES } from '../vendor/layout/layout.js'
 import { build, checkSpec } from '../vendor/layout/banner.js'
 
 // 期望值由原 Python 版 layout.py / banner.py 生成，JS 引擎必须逐字节一致
@@ -47,4 +47,16 @@ test('头像留空自动注入作者首字徽章兜底逻辑与获取指引', as
   assert.match(page.html, /内容管理 → 素材库/)
   assert.doesNotMatch(page.html, /本地图片预览/)
   assert.doesNotMatch(page.html, /请填写头像的公众号图片地址/)
+})
+
+test('所有风格的正文图片均使用 inline-block 以便在公众号缩小后居中及自由对齐', () => {
+  const md = '# 标题\n\n![设置页截图](https://mmbiz.qpic.cn/demo.png)\n'
+  for (const style of Object.keys(STYLES)) {
+    const { html } = renderFragment(md, { style, theme: 'orange', outro: 'false' })
+    const match = html.match(/<section style="margin:2[46]px 0;text-align:center;"><img src="https:\/\/mmbiz\.qpic\.cn\/demo\.png" style="([^"]+)"\/>/)
+    assert.ok(match, `${style} 风格未按预期输出图片容器`)
+    assert.match(match[1], /display:inline-block;/, `${style} 风格图片应使用 display:inline-block`)
+    assert.match(match[1], /vertical-align:top;/, `${style} 风格图片应使用 vertical-align:top`)
+    assert.doesNotMatch(match[1], /display:block/, `${style} 风格图片不应使用 display:block`)
+  }
 })
