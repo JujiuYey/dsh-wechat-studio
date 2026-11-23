@@ -490,6 +490,19 @@ test('analyzeCustomCoverStyle：输入校验、严格视觉门禁、质量重试
     analyzeCustomCoverStyle(mockLlmCtx({ replies: [] }), { referenceImages: ['not-a-data-url'] }),
     err => err.status === 400,
   )
+  await assert.rejects(
+    analyzeCustomCoverStyle(mockLlmCtx({ replies: [] }), { referenceImages: ['data:image/gif;base64,R0lGODlhAQABAAAAACw='] }),
+    err => err.status === 400 && /PNG\/JPEG\/WebP/.test(err.message),
+  )
+  await assert.rejects(
+    analyzeCustomCoverStyle(mockLlmCtx({ replies: [] }), {
+      referenceImages: [refImg],
+      requirement: '已有诉求',
+      draft: { name: '手改草稿', description: '描', usePortrait: false, template: '{{a}} {{b}}', guidance: '' },
+      adjustment: '   ',
+    }),
+    err => err.status === 400 && /调整/.test(err.message),
+  )
   const hugeImg = `data:image/png;base64,${Buffer.alloc(2 * 1024 * 1024 + 16, 1).toString('base64')}`
   await assert.rejects(
     analyzeCustomCoverStyle(mockLlmCtx({ replies: [] }), { referenceImages: [hugeImg] }),

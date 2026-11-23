@@ -4,7 +4,7 @@ import { lstat, mkdir, readdir, readFile, realpath, rename, rm, unlink, writeFil
 import { join, sep } from 'node:path'
 import { callModel, extractJson, modelVisionSupport } from './ai.js'
 import { generateCoverImage } from './cover.js'
-import { COVER_RESOLUTIONS, providerFormats, providerMeta } from './cover-options.js'
+import { COVER_PROVIDER_META, COVER_RESOLUTIONS, providerFormats } from './cover-options.js'
 import { COVER_STYLES, CUSTOM_COVER_STYLE_LIMITS, extractTemplateSlots, hasPortraitMarkers, isCustomStyleId } from './cover-styles.js'
 import { coverPrompt, findBlocked, loadCoverBlocklist } from './cover-prompt.js'
 import { parseDataImageUri } from './derive-shared.js'
@@ -621,6 +621,8 @@ export async function deleteCustomCoverStyle(root, id) {
 const DEFAULT_TEST_TITLE = '我用 AI 搭了一套自动化写作流'
 const ANY_PERSONA_MARKER_RE = /\[\[(?:SUBJECT|OUTFIT|人物|服装|玩偶)\]\]/
 
+const ALLOWED_REF_MEDIA_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp'])
+
 function validateReferenceImages(rawList) {
   if (rawList === undefined || rawList === null) return []
   if (!Array.isArray(rawList)) throw httpError(400, '参考图列表格式无效。')
@@ -631,7 +633,9 @@ function validateReferenceImages(rawList) {
   for (let i = 0; i < rawList.length; i++) {
     const dataUrl = typeof rawList[i] === 'string' ? rawList[i] : ''
     const parsed = parseDataImageUri(dataUrl)
-    if (!parsed) throw httpError(400, `第 ${i + 1} 张参考图不是有效的 PNG/JPEG/WebP 图片。`)
+    if (!parsed || !ALLOWED_REF_MEDIA_TYPES.has(parsed.mediaType)) {
+      throw httpError(400, `第 ${i + 1} 张参考图不是有效的 PNG/JPEG/WebP 图片。`)
+    }
     const bytes = Buffer.from(parsed.data, 'base64')
     if (!bytes.length || bytes.length > CUSTOM_COVER_STYLE_LIMITS.maxReferenceBytes) {
       throw httpError(400, `第 ${i + 1} 张参考图体积超过 2 MB 上限。`)
@@ -668,7 +672,7 @@ export async function analyzeCustomCoverStyle(ctx, { referenceImages = [], requi
   const images = validateReferenceImages(referenceImages)
   const cleanRequirement = typeof requirement === 'string' ? requirement.trim() : ''
   const cleanAdjustment = typeof adjustment === 'string' ? adjustment.trim() : ''
-  const isRefine = Boolean(draft && typeof draft === 'object' && cleanAdjustment)
+  const isRefine = Boolean(draft && typeof draft === 'object' && !Array.isArray(draft))
 
   if (cleanRequirement.length > CUSTOM_COVER_STYLE_LIMITS.maxRequirement) {
     throw httpError(400, `风格诉求不能超过 ${CUSTOM_COVER_STYLE_LIMITS.maxRequirement} 字。`)
@@ -741,7 +745,7 @@ export async function analyzeCustomCoverStyle(ctx, { referenceImages = [], requi
         continue
       }
       if (!candidate.usePortrait && ANY_PERSONA_MARKER_RE.test(candidate.template)) {
-        issue = 'usePortrait 为 false 时，template 不能包含 [[SUBJECT]] / [[OUTFIT]] / [[人物]] / [[服装]] 占位符。'
+        issue = 'usePortrait 为 false 时，template 不能包含 [[SUBJECT]] / [[OUTFIT]] / [[人物]] / [[服装]] / [[玩偶]] 占位符。'
         continue
       }
       return {
@@ -784,7 +788,8 @@ export async function previewCustomCoverStyle(ctx, root, settings, { draft, test
   }
 
   const provider = settings?.coverProvider || 'ark'
-  const meta = providerMeta(provider)
+  const meta = COVER_PROVIDER_META[provider]
+  if (!meta) throw httpError(400, '请选择有效的生图提供方。')
   const apiKey = settings?.[meta.keyField]
   const model = settings?.[meta.modelField]
   const format = providerFormats(provider)[0] || 'png'
