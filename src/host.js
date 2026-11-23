@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { COVER_RESOLUTIONS, COVER_FORMATS, MAX_COVER_COUNT, providerFormats, providerMeta } from './cover-options.js'
+import { COVER_PROVIDER_META, COVER_RESOLUTIONS, COVER_FORMATS, MAX_COVER_COUNT, providerFormats, providerMeta } from './cover-options.js'
 // dsh-wechat-studio host 半片：/wechat-studio/* 接口。
 import { join } from 'node:path'
 import { readFile } from 'node:fs/promises'
@@ -18,7 +18,19 @@ import { coverRuns, duplicateArticle } from './duplicate-article.js'
 import { analyzeInlineDiagrams, DIAGRAM_KINDS, insertDiagramBlock, sourceHash } from './inline-diagrams.js'
 import { loadInlineStyle, readInlineStyleCatalog } from './inline-skill.js'
 import { coverDownloadName, coverPrompt, generateCoverImage, readCover, saveCover } from './cover.js'
-import { COVER_STYLES } from './cover-styles.js'
+import { findBlocked, loadCoverBlocklist } from './cover-prompt.js'
+import { CUSTOM_COVER_STYLE_LIMITS, extractTemplateSlots, isCustomStyleId } from './cover-styles.js'
+import {
+  analyzeCustomCoverStyle,
+  deleteCustomCoverStyle,
+  listCoverStyles,
+  previewCustomCoverStyle,
+  readCustomCoverStyle,
+  readCustomStylePreview,
+  readDraftPreview,
+  resolveCoverStyle,
+  saveCustomCoverStyle,
+} from './custom-cover-styles.js'
 import { STYLES, THEMES, detectionText, renderLayout, resolveLayoutPreferences } from './layout.js'
 import { applyRule, buildInsights, EXPERIMENT_RESULTS, importData, INSIGHTS_EMPTY, previewRule } from './insights.js'
 import { Pipeline } from './pipeline.js'
@@ -79,9 +91,86 @@ async function insightsView(deps, range = 'all') {
 
 const imageJobs = new WeakMap()
 const coverJobs = new WeakMap()
+const coverStyleTestJobs = new WeakMap()
 const diagramJobs = new WeakMap()
 const deriveJobs = new WeakMap()
 const xhsJobs = new WeakMap()
+
+export const COVER_STYLE_TEST_JOB_TTL_MS = 30 * 60 * 1000
+export const MAX_COVER_STYLE_TEST_JOB_HISTORY = 20
+
+function testJobRegistry(store) {
+  if (!coverStyleTestJobs.has(store)) coverStyleTestJobs.set(store, { jobs: new Map(), latestId: null })
+  return coverStyleTestJobs.get(store)
+}
+
+export function pruneCoverStyleTestJobs(store, nowMs = Date.now()) {
+  const reg = coverStyleTestJobs.get(store)
+  if (!reg) return 0
+  let removed = 0
+  const finished = []
+  for (const [id, job] of reg.jobs) {
+    if (job.status === 'running') continue
+    if (job.finishedAt && nowMs - job.finishedAt > COVER_STYLE_TEST_JOB_TTL_MS) {
+      reg.jobs.delete(id)
+      if (reg.latestId === id) reg.latestId = null
+      removed++
+    } else {
+      finished.push(job)
+    }
+  }
+  if (finished.length > MAX_COVER_STYLE_TEST_JOB_HISTORY) {
+    finished.sort((a, b) => (a.finishedAt || 0) - (b.finishedAt || 0))
+    const excess = finished.length - MAX_COVER_STYLE_TEST_JOB_HISTORY
+    for (let i = 0; i < excess; i++) {
+      const target = finished[i]
+      reg.jobs.delete(target.jobId)
+      if (reg.latestId === target.jobId) reg.latestId = null
+      removed++
+    }
+  }
+  return removed
+}
+
+function publicTestJob(job) {
+  if (!job) return null
+  return {
+    jobId: job.jobId,
+    status: job.status,
+    stage: job.stage,
+    ...(job.result ? { result: job.result } : {}),
+    ...(job.error ? { error: job.error } : {}),
+  }
+}
+
+function findRunningTestJob(store) {
+  pruneCoverStyleTestJobs(store)
+  const reg = testJobRegistry(store)
+  for (const job of reg.jobs.values()) {
+    if (job.status === 'running') return job
+  }
+  return null
+}
+
+function activeTestJobForSummary(store) {
+  pruneCoverStyleTestJobs(store)
+  const running = findRunningTestJob(store)
+  if (running) return publicTestJob(running)
+  const reg = testJobRegistry(store)
+  const latest = reg.latestId ? reg.jobs.get(reg.latestId) : null
+  if (latest && !latest.consumed && latest.status === 'succeeded') return publicTestJob(latest)
+  return null
+}
+
+function withCoverStylePreviewUrl(style) {
+  if (!style || style.source !== 'custom') return style
+  return {
+    ...style,
+    previewUrl: style.previewFile
+      ? `wechat-studio/cover-styles/preview?${new URLSearchParams({ id: style.id, v: style.updatedAt || '1' })}`
+      : null,
+  }
+}
 
 function deriveJobSet(store) {
   if (!deriveJobs.has(store)) deriveJobs.set(store, new Set())
@@ -104,9 +193,10 @@ function startCover(deps, article, apiKey, options) {
   if (jobs.has(article.id)) return
   const title = article.title
   const markdown = toMarkdown(article)
-  const { count, style } = options
+  const { customStyle = null, ...persisted } = options
+  const { count, style } = persisted
   const record = {
-    id: randomUUID(), title, ...options, createdAt: new Date().toISOString(),
+    id: randomUUID(), title, ...persisted, createdAt: new Date().toISOString(),
     images: [], errors: [], status: 'running',
   }
   const job = { id: record.id, stage: 'prompt', count, index: 1 }
@@ -118,17 +208,20 @@ function startCover(deps, article, apiKey, options) {
       article.coverError = null
     })
     try {
-      const prompt = await coverPrompt(ctx, title, markdown, style, options.persona, { hasReference: Boolean(options.referenceImage) })
+      const prompt = await coverPrompt(ctx, title, markdown, style, persisted.persona, {
+        hasReference: Boolean(persisted.referenceImage),
+        customStyle,
+      })
       await store.update(() => { record.prompt = prompt })
       for (let index = 1; index <= count; index++) {
         Object.assign(job, { stage: 'generating', index })
         let id
         try {
-          const image = await generateCoverImage(options.provider, prompt, { ...options, apiKey }, fetchImpl)
+          const image = await generateCoverImage(persisted.provider, prompt, { ...persisted, apiKey }, fetchImpl)
           job.stage = 'saving'
-          id = await saveCover(store.root, image, options.format)
+          id = await saveCover(store.root, image, persisted.format)
         } catch (err) {
-          const isMinimaxTimeout = options.provider === 'minimax' && (err.code === 'MINIMAX_TIMEOUT' || err.name === 'TimeoutError')
+          const isMinimaxTimeout = persisted.provider === 'minimax' && (err.code === 'MINIMAX_TIMEOUT' || err.name === 'TimeoutError')
           const message = isMinimaxTimeout
             ? (err.code === 'MINIMAX_TIMEOUT' ? err.message : 'MiniMax 封面生成已等待 600 秒并断开，服务端仍可能完成并计费；请避免立即重复提交。')
             : (err.name === 'TimeoutError' ? '封面生成超时，请重试。' : err.message)
@@ -144,7 +237,7 @@ function startCover(deps, article, apiKey, options) {
     await store.update(() => {
       record.status = !record.images.length ? 'failed' : record.errors.length ? 'partial' : 'succeeded'
       if (record.images.length) {
-        article.cover = { ...options, id: record.images[0].id, title, prompt: record.prompt, createdAt: record.createdAt }
+        article.cover = { ...persisted, id: record.images[0].id, title, prompt: record.prompt, createdAt: record.createdAt }
       }
       article.coverError = record.errors[0] ?? null
     })
@@ -533,6 +626,58 @@ export async function route(deps, req, res) {
       })
     }
     if (path === 'insights/data') return json(res, 200, await insightsView(deps, url.searchParams.get('range')))
+    if (path === 'cover-styles') {
+      const [{ styles, warnings }, visionSupport] = await Promise.all([
+        listCoverStyles(store.root),
+        modelVisionSupport(ctx),
+      ])
+      return json(res, 200, {
+        styles: styles.map(withCoverStylePreviewUrl),
+        warnings,
+        visionSupport,
+        activeTestJob: activeTestJobForSummary(store),
+      })
+    }
+    if (path === 'cover-styles/item') {
+      const id = url.searchParams.get('id')
+      if (!isCustomStyleId(id)) return json(res, 400, { error: '无效的自定义封面风格 ID。' })
+      const style = await readCustomCoverStyle(store.root, id)
+      if (!style) return json(res, 404, { error: '自定义封面风格不存在。' })
+      return json(res, 200, { style: withCoverStylePreviewUrl(style) })
+    }
+    if (path === 'cover-styles/preview') {
+      try {
+        const { buffer, contentType } = await readCustomStylePreview(store.root, url.searchParams.get('id'))
+        res.setHeader('content-type', contentType)
+        res.setHeader('cache-control', 'private, no-store')
+        return res.end(buffer)
+      } catch (err) {
+        return json(res, err.status || 404, { error: err.message || '预览图不存在。' })
+      }
+    }
+    if (path === 'cover-styles/draft-preview') {
+      try {
+        const { buffer, contentType } = await readDraftPreview(store.root, url.searchParams.get('token'))
+        res.setHeader('content-type', contentType)
+        res.setHeader('cache-control', 'private, no-store')
+        return res.end(buffer)
+      } catch (err) {
+        return json(res, err.status || 404, { error: err.message || '试生成样图不存在。' })
+      }
+    }
+    if (path === 'cover-styles/test-status') {
+      pruneCoverStyleTestJobs(store)
+      const reg = testJobRegistry(store)
+      const requestedId = url.searchParams.get('jobId')
+      if (requestedId) {
+        const job = reg.jobs.get(requestedId)
+        if (!job) return json(res, 404, { error: '试生成任务不存在或已过期。' })
+        return json(res, 200, publicTestJob(job))
+      }
+      const running = findRunningTestJob(store)
+      const job = running ?? (reg.latestId ? reg.jobs.get(reg.latestId) : null)
+      return json(res, 200, publicTestJob(job))
+    }
     const article = mustFind(await store.read(), url.searchParams.get('id'))
     if (path === 'inline-diagrams/image') {
       if (article.archivedAt) return json(res, 409, { error: '归档稿件不能读取插图。' })
@@ -567,7 +712,8 @@ export async function route(deps, req, res) {
       res.setHeader('content-type', `image/${format}`)
       res.setHeader('cache-control', 'private, no-store')
       if (url.searchParams.has('download')) {
-        const filename = coverDownloadName(article, run, id)
+        const liveStyle = await resolveCoverStyle(store.root, run.style)
+        const filename = coverDownloadName(article, run, id, liveStyle?.name ?? '')
         const encoded = encodeURIComponent(filename).replace(/'/g, '%27')
         res.setHeader('content-disposition', `attachment; filename="cover.${format}"; filename*=UTF-8''${encoded}`)
       }
@@ -857,21 +1003,25 @@ export async function route(deps, req, res) {
         const runs = coverRuns(article)
         const run = runs.find(entry => entry.images.some(image => image.id === body.asset))
         if (!run) throw Object.assign(new Error('这篇文章没有这张封面。'), { status: 404 })
-        const { title, prompt, style, model, createdAt, resolution, count, format, provider } = run
+        const { title, prompt, style, styleName, model, createdAt, resolution, count, format, provider } = run
         try {
           await readCover(store.root, body.asset, format)
         } catch {
           throw Object.assign(new Error('封面文件不存在。'), { status: 404 })
         }
         article.coverRuns = runs
-        article.cover = { id: body.asset, title, prompt, style, model, createdAt, resolution, count, format, provider }
+        article.cover = {
+          id: body.asset, title, prompt, style,
+          ...(styleName ? { styleName } : {}),
+          model, createdAt, resolution, count, format, provider,
+        }
         touch(article)
       })
       return ok()
     }
     case 'cover/generate': {
-      const style = COVER_STYLES.find(item => item.id === body.style)?.id
-      if (!style) return json(res, 400, { error: '请先选择封面风格。' })
+      const resolved = await resolveCoverStyle(store.root, body.style)
+      if (!resolved) return json(res, 400, { error: '请先选择封面风格。' })
       const article = mustFind(await store.read(), body.id)
       if (!article.title?.trim() || !article.blocks.length) return json(res, 400, { error: '请先选定标题并填写正文。' })
       const { resolution = '2K', count = 1, format = 'png' } = body
@@ -886,10 +1036,116 @@ export async function route(deps, req, res) {
       const apiKey = settings[meta.keyField]
       const model = settings[meta.modelField]
       if (!apiKey) return json(res, 400, { error: meta.missingKeyError })
-      // felt 是毛毡微缩场景，传真人参考图会把画面拉回真人摄影
-      const referenceImage = style === 'felt' ? null : settings.portraitUrl || null
-      startCover(deps, article, apiKey, { style, resolution, count, format, model, provider, referenceImage, persona: settings.persona })
+      const referenceImage = resolved.usePortrait ? (settings.portraitUrl || null) : null
+      startCover(deps, article, apiKey, {
+        style: resolved.id,
+        styleName: resolved.name,
+        resolution,
+        count,
+        format,
+        model,
+        provider,
+        referenceImage,
+        persona: settings.persona,
+        customStyle: resolved.source === 'custom' ? resolved : null,
+      })
       return ok()
+    }
+    case 'cover-styles/analyze': {
+      const result = await analyzeCustomCoverStyle(ctx, {
+        referenceImages: body.referenceImages,
+        requirement: body.requirement,
+        draft: body.draft,
+        adjustment: body.adjustment,
+      })
+      return json(res, 200, result)
+    }
+    case 'cover-styles/test-generate': {
+      const running = findRunningTestJob(store)
+      if (running) {
+        return json(res, 409, { error: '当前已有样图正在试生成，请等待完成后再试。', activeJobId: running.jobId })
+      }
+      const resolution = body.resolution ?? '1K'
+      if (!COVER_RESOLUTIONS.includes(resolution)) {
+        return json(res, 400, { error: '请选择有效的试生成分辨率（1K、1.5K 或 2K）。' })
+      }
+      const template = typeof body.draft?.template === 'string' ? body.draft.template.replace(/\r\n?/g, '\n').trim() : ''
+      if (!template || template.length > CUSTOM_COVER_STYLE_LIMITS.maxTemplate) {
+        return json(res, 400, { error: `提示词模板不能为空，且不超过 ${CUSTOM_COVER_STYLE_LIMITS.maxTemplate} 字。` })
+      }
+      if (extractTemplateSlots(template).length < CUSTOM_COVER_STYLE_LIMITS.minSlots) {
+        return json(res, 400, { error: `提示词模板至少需要包含 ${CUSTOM_COVER_STYLE_LIMITS.minSlots} 个 {{...}} 占位符。` })
+      }
+      const blocked = findBlocked(await loadCoverBlocklist(), template)
+      if (blocked) {
+        return json(res, 400, { error: `提示词模板包含封面禁用词「${blocked}」，请修改后再试生成。` })
+      }
+      const settings = await readSettings(store.root)
+      const provider = settings.coverProvider
+      const meta = Object.hasOwn(COVER_PROVIDER_META, provider) ? COVER_PROVIDER_META[provider] : null
+      if (!meta) return json(res, 400, { error: '请选择有效的生图提供方。' })
+      if (!settings[meta.keyField]) return json(res, 400, { error: meta.missingKeyError })
+
+      const reg = testJobRegistry(store)
+      const jobId = randomUUID()
+      const job = { jobId, status: 'running', stage: 'prompt', createdAt: Date.now(), finishedAt: null, result: null, error: null, consumed: false }
+      reg.jobs.set(jobId, job)
+      reg.latestId = jobId
+
+      void (async () => {
+        try {
+          const res = await previewCustomCoverStyle(ctx, store.root, settings, {
+            draft: body.draft,
+            testTitle: body.testTitle,
+            testMarkdown: body.testMarkdown,
+            resolution,
+            onStage: stage => { job.stage = stage },
+          }, deps.fetchImpl)
+          job.result = {
+            draftToken: res.draftToken,
+            previewUrl: `wechat-studio/cover-styles/draft-preview?${new URLSearchParams({ token: res.draftToken })}`,
+            prompt: res.prompt,
+            format: res.format,
+            provider: res.provider,
+            model: res.model,
+          }
+          job.status = 'succeeded'
+        } catch (err) {
+          const isMinimaxTimeout = provider === 'minimax' && (err.code === 'MINIMAX_TIMEOUT' || err.name === 'TimeoutError')
+          job.error = isMinimaxTimeout
+            ? (err.code === 'MINIMAX_TIMEOUT' ? err.message : 'MiniMax 样例封面生成已等待 600 秒并断开，服务端仍可能完成并计费；请避免立即重复提交。')
+            : (err.name === 'TimeoutError' ? '试生成样图超时，请重试。' : (err.message || '试生成样图失败。'))
+          job.status = 'failed'
+        } finally {
+          job.finishedAt = Date.now()
+          pruneCoverStyleTestJobs(store)
+        }
+      })()
+
+      return json(res, 200, publicTestJob(job))
+    }
+    case 'cover-styles/save': {
+      const saved = await saveCustomCoverStyle(store.root, body)
+      if (body.previewDraftToken) {
+        const reg = coverStyleTestJobs.get(store)
+        if (reg) {
+          for (const job of reg.jobs.values()) {
+            if (job.result?.draftToken === body.previewDraftToken) job.consumed = true
+          }
+        }
+      }
+      return json(res, 200, {
+        style: withCoverStylePreviewUrl(saved.style),
+        styles: saved.styles.map(withCoverStylePreviewUrl),
+        warnings: saved.warnings,
+      })
+    }
+    case 'cover-styles/delete': {
+      const after = await deleteCustomCoverStyle(store.root, body.id)
+      return json(res, 200, {
+        styles: after.styles.map(withCoverStylePreviewUrl),
+        warnings: after.warnings,
+      })
     }
     case 'images/retry': {
       const article = mustFind(await store.read(), body.id)
