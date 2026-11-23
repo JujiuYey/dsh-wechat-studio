@@ -6,6 +6,8 @@ import { CUSTOM_COVER_STYLE_LIMITS, extractTemplateSlots } from './cover-styles.
 
 const read = file => readFile(join(COVER_SKILL_DIR, file), 'utf8')
 
+const STYLE_REFERENCE_DIRECTIVE = 'STYLE REFERENCE DIRECTIVE: Use the attached reference image ONLY for visual style, color palette, typography treatment, surface texture, lighting, and overall layout proportions. Do NOT copy, trace, or retain any original text, titles, logos, watermarks, or specific objects from the reference image. Replace ALL text and visual subjects completely with the exact content specified below.'
+
 export async function loadCoverBlocklist() {
   return (await read('references/blocklist.txt')).split(/\r?\n/).map(line => line.trim().toLowerCase()).filter(line => line && !line.startsWith('#'))
 }
@@ -60,8 +62,9 @@ export async function buildCoverPromptRequest(title, markdown, style = 'classic'
   return { style, title, system, user, slots, template: body, terms, fragments, personSegments: PERSON_SEGMENTS }
 }
 
-export async function coverPrompt(ctx, title, markdown, style = 'classic', persona = {}, { hasReference = false, customStyle = null } = {}) {
-  const { system, user, slots, template: body, terms, fragments } = await buildCoverPromptRequest(title, markdown, style, persona, { hasReference, customStyle })
+export async function coverPrompt(ctx, title, markdown, style = 'classic', persona = {}, { hasReference = false, referenceKind = null, customStyle = null } = {}) {
+  const personaHasReference = referenceKind === 'style' ? false : hasReference
+  const { system, user, slots, template: body, terms, fragments } = await buildCoverPromptRequest(title, markdown, style, persona, { hasReference: personaHasReference, customStyle })
   let issue
   for (let attempt = 0; attempt < 2; attempt++) {
     const output = extractJson(await callModel(ctx, {
@@ -87,7 +90,8 @@ export async function coverPrompt(ctx, title, markdown, style = 'classic', perso
     // 用户写的描述有问题时重试 LLM 没用，直接让用户去设置里改
     const personaBlocked = usedPersonaKeys(filled).map(key => findBlocked(terms, fragments[key])).find(Boolean)
     if (personaBlocked) throw new Error(`设置里的人物描述含禁用词「${personaBlocked}」，请到「设置 · 封面生成」修改。`)
-    const prompt = fillPersona(filled, fragments)
+    const basePrompt = fillPersona(filled, fragments)
+    const prompt = referenceKind === 'style' ? `${STYLE_REFERENCE_DIRECTIVE}\n\n${basePrompt}` : basePrompt
     const blocked = findBlocked(terms, prompt)
     if (!blocked) return prompt
     issue = `成稿含禁用词：${blocked}。`

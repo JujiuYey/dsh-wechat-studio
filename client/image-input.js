@@ -22,7 +22,7 @@ export async function compressReferenceImageFile(file) {
   })
   const img = await loadBrowserImage(rawUrl)
   if (
-    /^data:image\/(?:png|jpeg|jpg|webp);base64,/i.test(rawUrl)
+    /^data:image\/(?:png|jpeg|jpg);base64,/i.test(rawUrl)
     && rawUrl.length <= 320_000
     && img.width <= 960
     && img.height <= 960

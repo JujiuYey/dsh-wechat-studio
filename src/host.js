@@ -28,6 +28,7 @@ import {
   readCustomCoverStyle,
   readCustomStylePreview,
   readDraftPreview,
+  resolveCoverReferenceImage,
   resolveCoverStyle,
   saveCustomCoverStyle,
 } from './custom-cover-styles.js'
@@ -194,7 +195,7 @@ function startCover(deps, article, apiKey, options) {
   if (jobs.has(article.id)) return
   const title = article.title
   const markdown = toMarkdown(article)
-  const { customStyle = null, ...persisted } = options
+  const { customStyle = null, runtimeReferenceImage = null, referenceKind = null, ...persisted } = options
   const { count, style } = persisted
   const record = {
     id: randomUUID(), title, ...persisted, createdAt: new Date().toISOString(),
@@ -211,14 +212,16 @@ function startCover(deps, article, apiKey, options) {
     try {
       const prompt = await coverPrompt(ctx, title, markdown, style, persisted.persona, {
         hasReference: Boolean(persisted.referenceImage),
+        referenceKind: referenceKind ?? (persisted.referenceImage ? 'portrait' : null),
         customStyle,
       })
       await store.update(() => { record.prompt = prompt })
+      const effectiveReferenceImage = runtimeReferenceImage ?? persisted.referenceImage ?? null
       for (let index = 1; index <= count; index++) {
         Object.assign(job, { stage: 'generating', index })
         let id
         try {
-          const image = await generateCoverImage(persisted.provider, prompt, { ...persisted, apiKey }, fetchImpl)
+          const image = await generateCoverImage(persisted.provider, prompt, { ...persisted, referenceImage: effectiveReferenceImage, apiKey }, fetchImpl)
           job.stage = 'saving'
           id = await saveCover(store.root, image, persisted.format)
         } catch (err) {
@@ -792,7 +795,12 @@ export async function route(deps, req, res) {
     return json(res, 200, await insightsView(deps, url.searchParams.get('range')))
   }
 
-  const body = await readJson(req, path === 'cover-styles/analyze' ? MAX_ANALYZE_JSON : MAX_JSON)
+  const body = await readJson(
+    req,
+    path === 'cover-styles/analyze' || path === 'cover-styles/test-generate' || path === 'cover-styles/save'
+      ? MAX_ANALYZE_JSON
+      : MAX_JSON,
+  )
   switch (path) {
     case 'inline-diagrams/analyze': {
       const article = activeInlineArticle(await store.read(), body.id)
@@ -1037,7 +1045,7 @@ export async function route(deps, req, res) {
       const apiKey = settings[meta.keyField]
       const model = settings[meta.modelField]
       if (!apiKey) return json(res, 400, { error: meta.missingKeyError })
-      const referenceImage = resolved.usePortrait ? (settings.portraitUrl || null) : null
+      const { referenceImage: resolvedRef, referenceKind } = await resolveCoverReferenceImage(store.root, resolved, settings)
       startCover(deps, article, apiKey, {
         style: resolved.id,
         styleName: resolved.name,
@@ -1046,7 +1054,9 @@ export async function route(deps, req, res) {
         format,
         model,
         provider,
-        referenceImage,
+        referenceImage: referenceKind === 'portrait' ? resolvedRef : null,
+        runtimeReferenceImage: referenceKind === 'style' ? resolvedRef : null,
+        referenceKind,
         persona: settings.persona,
         customStyle: resolved.source === 'custom' ? resolved : null,
       })
@@ -1110,6 +1120,7 @@ export async function route(deps, req, res) {
             testTitle: body.testTitle,
             testMarkdown: body.testMarkdown,
             resolution,
+            styleReferenceImage: body.styleReferenceImage ?? null,
             onStage: stage => { job.stage = stage },
           }, deps.fetchImpl)
           job.result = {

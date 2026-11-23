@@ -15,7 +15,9 @@ import {
   pruneExpiredDrafts,
   readCustomCoverStyle,
   readCustomStylePreview,
+  readCustomStyleReferenceDataUrl,
   readDraftPreview,
+  resolveCoverReferenceImage,
   resolveCoverStyle,
   saveCustomCoverStyle,
   saveDraftPreview,
@@ -674,4 +676,97 @@ test('coverPrompt：自定义风格中的 {{人物段}} 不受内置 felt 枚举
   })
   assert.match(prompt, /写给工程师的复盘/)
   assert.match(prompt, /一名背对镜头的剪影站在窗前/)
+})
+
+test('风格参考图：原子存储、resolveCoverReferenceImage 分流与试生成透传 STYLE REFERENCE DIRECTIVE', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'ws-custom-style-ref-'))
+  const png = makePng(120, 60)
+  const refDataUrl = `data:image/png;base64,${png.toString('base64')}`
+
+  // 1. 新建保存风格参考图
+  const created = await saveCustomCoverStyle(root, {
+    name: '红黑版画风',
+    description: '高对比复古红黑版画',
+    usePortrait: false,
+    useStyleReference: true,
+    template: 'A wide-format 21:9 banner. Title "{{主标题}}", subject {{主体}}.',
+    guidance: '标题 4-8 字',
+    styleReferenceImage: refDataUrl,
+  })
+  assert.equal(created.style.useStyleReference, true)
+  assert.equal(created.style.hasStyleReference, true)
+  assert.equal(created.style.styleReferenceFile, 'style-ref.png')
+
+  const loadedUrl = await readCustomStyleReferenceDataUrl(root, created.style.id)
+  assert.equal(loadedUrl, refDataUrl)
+
+  // 2. resolveCoverReferenceImage：纯视觉且开启 useStyleReference -> 返回 style-ref
+  const settings = { portraitUrl: 'https://example.com/me.png' }
+  const resolvedStyle = await resolveCoverStyle(root, created.style.id)
+  const styleRef = await resolveCoverReferenceImage(root, resolvedStyle, settings)
+  assert.equal(styleRef.referenceKind, 'style')
+  assert.equal(styleRef.referenceImage, refDataUrl)
+
+  // 3. 关闭 useStyleReference 后不再透传参考图（但保留已存文件方便重新开启）
+  const toggledOff = await saveCustomCoverStyle(root, {
+    id: created.style.id,
+    name: '红黑版画风',
+    description: '高对比复古红黑版画',
+    usePortrait: false,
+    useStyleReference: false,
+    template: 'A wide-format 21:9 banner. Title "{{主标题}}", subject {{主体}}.',
+    guidance: '标题 4-8 字',
+  })
+  assert.equal(toggledOff.style.useStyleReference, false)
+  assert.equal(toggledOff.style.hasStyleReference, true)
+  const noRef = await resolveCoverReferenceImage(root, toggledOff.style, settings)
+  assert.deepEqual(noRef, { referenceImage: null, referenceKind: null })
+
+  // 4. previewCustomCoverStyle 开启 useStyleReference 时透传图片并附加 STYLE REFERENCE DIRECTIVE
+  const fetchCalls = []
+  const fetchImpl = async (url, init) => {
+    fetchCalls.push({ url, init })
+    return Response.json({ data: [{ b64_json: png.toString('base64') }] })
+  }
+  const llmCtx = mockLlmCtx({ replies: [{ values: ['红黑测试标题', '几何麦穗'] }] })
+  const preview = await previewCustomCoverStyle(llmCtx, root, {
+    coverProvider: 'ark',
+    arkModel: 'doubao-seedream-5-5-261028',
+    arkKey: 'sk-ark',
+    portraitUrl: 'https://example.com/me.png',
+    persona: { gender: 'auto', outfit: 'photo', outfitText: '', appearance: '' },
+  }, {
+    draft: {
+      id: created.style.id,
+      name: '红黑版画风',
+      template: 'A wide-format 21:9 banner. Title "{{主标题}}", subject {{主体}}.',
+      guidance: '',
+      usePortrait: false,
+      useStyleReference: true,
+    },
+    testTitle: '红黑测试标题',
+  }, fetchImpl)
+  const sentBody = JSON.parse(fetchCalls[0].init.body)
+  assert.equal(sentBody.image, refDataUrl, '未传 styleReferenceImage 时应自动回退读取已保存的 style-ref')
+  assert.match(preview.prompt, /^STYLE REFERENCE DIRECTIVE:/)
+  assert.match(preview.prompt, /红黑测试标题/)
+})
+
+test('analyzeCustomCoverStyle：拆解 system prompt 包含工程分块规范与 template/guidance 严格隔离要求', async () => {
+  const seen = []
+  const ctx = mockLlmCtx({
+    replies: [{
+      name: '测试规范风',
+      description: '结构化测试',
+      usePortrait: false,
+      template: 'A wide-format 21:9 banner. Title "{{主标题}}", subject {{主体}}.',
+      guidance: '例如 Kimi 对应月球',
+    }],
+    onCall: req => seen.push(req),
+  })
+  await analyzeCustomCoverStyle(ctx, { requirement: '暗夜电影感' })
+  assert.match(seen[0].system, /COLOR SYSTEM \(fixed\)/)
+  assert.match(seen[0].system, /TEXT IN THE IMAGE/)
+  assert.match(seen[0].system, /STYLE & NEGATIVES/)
+  assert.match(seen[0].system, /严格隔离 template 与 guidance/)
 })

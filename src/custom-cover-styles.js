@@ -11,6 +11,7 @@ import { parseDataImageUri } from './derive-shared.js'
 import { withFileLock } from './store.js'
 
 export const CUSTOM_STYLE_PREVIEW_FILES = new Set(['preview.png', 'preview.jpg', 'preview.jpeg'])
+export const CUSTOM_STYLE_REF_FILES = new Set(['style-ref.png', 'style-ref.jpg', 'style-ref.jpeg'])
 const DRAFT_TTL_MS = 24 * 60 * 60 * 1000
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const PREVIEW_EXTS = ['png', 'jpg', 'jpeg']
@@ -99,10 +100,12 @@ export function validateCustomStyleInput(input, blocklistTerms = []) {
   if (blocked) {
     throw httpError(400, `提示词模板包含封面禁用词「${blocked}」，请换成克制的正面描述后再保存。`)
   }
+  const usePortrait = Boolean(input?.usePortrait)
   return {
     name,
     description,
-    usePortrait: Boolean(input?.usePortrait),
+    usePortrait,
+    useStyleReference: !usePortrait && Boolean(input?.useStyleReference),
     userRequirement,
     template,
     guidance,
@@ -115,6 +118,13 @@ function safePreviewFileName(value) {
   if (typeof value !== 'string') return null
   if (value.includes('/') || value.includes('\\') || value.includes('..')) return null
   return CUSTOM_STYLE_PREVIEW_FILES.has(value) ? value : null
+}
+
+function safeStyleReferenceFileName(value) {
+  if (value === null || value === undefined || value === '') return null
+  if (typeof value !== 'string') return null
+  if (value.includes('/') || value.includes('\\') || value.includes('..')) return null
+  return CUSTOM_STYLE_REF_FILES.has(value) ? value : null
 }
 
 async function readStyleDirEntry(stylesDirReal, dirName) {
@@ -157,6 +167,8 @@ async function readStyleDirEntry(stylesDirReal, dirName) {
       }
     }
     const previewFile = safePreviewFileName(meta.previewFile)
+    const styleReferenceFile = safeStyleReferenceFileName(meta.styleReferenceFile)
+    const usePortrait = Boolean(meta.usePortrait)
     const slots = extractTemplateSlots(template)
     return {
       style: {
@@ -165,9 +177,12 @@ async function readStyleDirEntry(stylesDirReal, dirName) {
         source: 'custom',
         name: meta.name.trim(),
         description: meta.description.trim(),
-        usePortrait: Boolean(meta.usePortrait),
+        usePortrait,
+        useStyleReference: !usePortrait && Boolean(meta.useStyleReference) && Boolean(styleReferenceFile),
         userRequirement: typeof meta.userRequirement === 'string' ? meta.userRequirement : '',
         previewFile,
+        styleReferenceFile,
+        hasStyleReference: Boolean(styleReferenceFile),
         createdAt: typeof meta.createdAt === 'string' ? meta.createdAt : '',
         updatedAt: typeof meta.updatedAt === 'string' ? meta.updatedAt : '',
         template,
@@ -362,6 +377,70 @@ export async function readCustomStylePreview(root, id) {
   return { buffer, contentType }
 }
 
+export async function readCustomStyleReferenceDataUrl(root, id) {
+  if (!isCustomStyleId(id)) return null
+  const dir = stylesRoot(root)
+  let styleDirReal
+  try {
+    const dirReal = await assertDirNoSymlink(dir, null)
+    styleDirReal = await assertDirNoSymlink(join(dirReal, id), dirReal)
+  } catch {
+    return null
+  }
+  let meta
+  try {
+    const metaPath = join(styleDirReal, 'meta.json')
+    await assertRegularNoSymlink(metaPath, styleDirReal)
+    meta = JSON.parse(await readFile(metaPath, 'utf8'))
+  } catch {
+    return null
+  }
+  const refFile = safeStyleReferenceFileName(meta?.styleReferenceFile)
+  if (!refFile) return null
+  try {
+    const refPath = join(styleDirReal, refFile)
+    const refReal = await assertRegularNoSymlink(refPath, styleDirReal)
+    const buffer = await readFile(refReal)
+    const contentType = detectImageContentType(buffer)
+    if (!contentType) return null
+    return `data:${contentType};base64,${buffer.toString('base64')}`
+  } catch {
+    return null
+  }
+}
+
+export async function resolveCoverReferenceImage(root, resolvedStyle, settings) {
+  if (!resolvedStyle) return { referenceImage: null, referenceKind: null }
+  if (resolvedStyle.usePortrait) {
+    const portrait = settings?.portraitUrl || null
+    return { referenceImage: portrait, referenceKind: portrait ? 'portrait' : null }
+  }
+  if (resolvedStyle.source === 'custom' && resolvedStyle.useStyleReference) {
+    const dataUrl = await readCustomStyleReferenceDataUrl(root, resolvedStyle.id)
+    if (dataUrl) return { referenceImage: dataUrl, referenceKind: 'style' }
+  }
+  return { referenceImage: null, referenceKind: null }
+}
+
+function prepareStyleReferenceImage(dataUrl) {
+  const parsed = parseDataImageUri(dataUrl)
+  if (!parsed) throw httpError(400, '风格参考图不是有效的图片 Data URL。')
+  const raw = Buffer.from(parsed.data, 'base64')
+  if (!raw.length || raw.length > CUSTOM_COVER_STYLE_LIMITS.maxReferenceBytes) {
+    throw httpError(400, '风格参考图体积超过 2 MB 上限。')
+  }
+  const detected = detectImageContentType(raw)
+  if (!detected) {
+    throw httpError(400, '风格参考图仅支持 PNG 或 JPEG 图片。')
+  }
+  return {
+    buffer: raw,
+    styleReferenceFile: detected === 'image/jpeg' ? 'style-ref.jpg' : 'style-ref.png',
+    contentType: detected,
+    dataUrl: `data:${detected};base64,${raw.toString('base64')}`,
+  }
+}
+
 async function prepareFallbackPreview(dataUrl) {
   const parsed = parseDataImageUri(dataUrl)
   if (!parsed) throw httpError(400, '参考图不是有效的图片 Data URL。')
@@ -412,7 +491,7 @@ export async function saveCustomCoverStyle(root, input, opts = {}) {
     throw httpError(400, '只能编辑自定义封面风格，不能修改系统内置风格或非法 ID。')
   }
 
-  // 解析预览图输入（在锁外先读草稿或裁切参考图，失败不持锁）
+  // 解析预览图与可选风格参考图输入（在锁外先读草稿或校验图片，失败不持锁）
   let newPreview = null
   let consumedDraftPath = null
   if (input?.previewDraftToken) {
@@ -424,6 +503,10 @@ export async function saveCustomCoverStyle(root, input, opts = {}) {
     consumedDraftPath = draft.path
   } else if (input?.fallbackReferenceImage) {
     newPreview = await prepareFallbackPreview(input.fallbackReferenceImage)
+  }
+  let newStyleRef = null
+  if (input?.styleReferenceImage) {
+    newStyleRef = prepareStyleReferenceImage(input.styleReferenceImage)
   }
 
   const dir = stylesRoot(root)
@@ -439,14 +522,17 @@ export async function saveCustomCoverStyle(root, input, opts = {}) {
         throw httpError(400, `本地自定义封面风格已达上限（${CUSTOM_COVER_STYLE_LIMITS.maxStyles} 套），请先删除不需要的风格再新建。`)
       }
       const id = await generateUniqueId(dirReal)
+      const styleReferenceFile = newStyleRef ? newStyleRef.styleReferenceFile : null
       const meta = {
         version: 1,
         id,
         name: validated.name,
         description: validated.description,
         usePortrait: validated.usePortrait,
+        useStyleReference: validated.useStyleReference && Boolean(styleReferenceFile),
         userRequirement: validated.userRequirement,
         previewFile: newPreview ? newPreview.previewFile : null,
+        styleReferenceFile,
         createdAt: now,
         updatedAt: now,
       }
@@ -459,6 +545,9 @@ export async function saveCustomCoverStyle(root, input, opts = {}) {
         if (newPreview) {
           await writeFile(join(stagingDir, newPreview.previewFile), newPreview.buffer, { mode: 0o600 })
         }
+        if (newStyleRef) {
+          await writeFile(join(stagingDir, newStyleRef.styleReferenceFile), newStyleRef.buffer, { mode: 0o600 })
+        }
         await writeFile(join(stagingDir, 'meta.json'), JSON.stringify(meta, null, 2) + '\n', { mode: 0o600 })
         if (opts._testFailBeforeCommit) throw new Error('simulated failure before create commit')
         await rename(stagingDir, targetDir)
@@ -466,7 +555,14 @@ export async function saveCustomCoverStyle(root, input, opts = {}) {
         await rm(stagingDir, { recursive: true, force: true }).catch(() => {})
         throw err
       }
-      return { ...meta, source: 'custom', template: validated.template, guidance: validated.guidance, slots: validated.slots }
+      return {
+        ...meta,
+        source: 'custom',
+        hasStyleReference: Boolean(styleReferenceFile),
+        template: validated.template,
+        guidance: validated.guidance,
+        slots: validated.slots,
+      }
     }
 
     // 更新已有风格：同目录临时文件准备 -> 顺序替换 -> meta 提交
@@ -518,16 +614,30 @@ export async function saveCustomCoverStyle(root, input, opts = {}) {
         if (err.code !== 'ENOENT') throw err
       }
     }
+    const oldStyleRefFile = safeStyleReferenceFileName(prevMeta?.styleReferenceFile)
+    let oldStyleRefBuf = null
+    if (newStyleRef && oldStyleRefFile === newStyleRef.styleReferenceFile) {
+      const oldStyleRefPath = join(targetDirReal, oldStyleRefFile)
+      try {
+        await assertRegularNoSymlink(oldStyleRefPath, targetDirReal)
+        oldStyleRefBuf = await readFile(oldStyleRefPath)
+      } catch (err) {
+        if (err.code !== 'ENOENT') throw err
+      }
+    }
 
     const nextPreviewFile = newPreview ? newPreview.previewFile : oldPreviewFile
+    const nextStyleRefFile = input?.clearStyleReference ? null : (newStyleRef ? newStyleRef.styleReferenceFile : oldStyleRefFile)
     const meta = {
       version: 1,
       id,
       name: validated.name,
       description: validated.description,
       usePortrait: validated.usePortrait,
+      useStyleReference: validated.useStyleReference && Boolean(nextStyleRefFile),
       userRequirement: validated.userRequirement,
       previewFile: nextPreviewFile,
+      styleReferenceFile: nextStyleRefFile,
       createdAt: typeof prevMeta?.createdAt === 'string' && prevMeta.createdAt ? prevMeta.createdAt : now,
       updatedAt: now,
     }
@@ -538,8 +648,10 @@ export async function saveCustomCoverStyle(root, input, opts = {}) {
     const tmpGuidance = join(targetDirReal, `.guidance.${token}.tmp`)
     const tmpMeta = join(targetDirReal, `.meta.${token}.tmp`)
     const tmpPreview = newPreview ? join(targetDirReal, `.preview.${token}.tmp`) : null
+    const tmpStyleRef = (!input?.clearStyleReference && newStyleRef) ? join(targetDirReal, `.style-ref.${token}.tmp`) : null
 
     let previewReplaced = false
+    let styleRefReplaced = false
     let templateReplaced = false
     let guidanceReplaced = false
     let metaReplaced = false
@@ -547,6 +659,10 @@ export async function saveCustomCoverStyle(root, input, opts = {}) {
       if (tmpPreview) {
         await writeFile(tmpPreview, newPreview.buffer, { mode: 0o600 })
         tmpFiles.push(tmpPreview)
+      }
+      if (tmpStyleRef) {
+        await writeFile(tmpStyleRef, newStyleRef.buffer, { mode: 0o600 })
+        tmpFiles.push(tmpStyleRef)
       }
       await writeFile(tmpTemplate, validated.template, { mode: 0o600 })
       tmpFiles.push(tmpTemplate)
@@ -561,6 +677,10 @@ export async function saveCustomCoverStyle(root, input, opts = {}) {
         await rename(tmpPreview, join(targetDirReal, newPreview.previewFile))
         previewReplaced = true
       }
+      if (tmpStyleRef) {
+        await rename(tmpStyleRef, join(targetDirReal, newStyleRef.styleReferenceFile))
+        styleRefReplaced = true
+      }
       await rename(tmpTemplate, templatePath)
       templateReplaced = true
       await rename(tmpGuidance, guidancePath)
@@ -571,12 +691,19 @@ export async function saveCustomCoverStyle(root, input, opts = {}) {
       if (newPreview && oldPreviewFile && oldPreviewFile !== newPreview.previewFile) {
         await unlink(join(targetDirReal, oldPreviewFile)).catch(() => {})
       }
+      if (oldStyleRefFile && oldStyleRefFile !== nextStyleRefFile) {
+        await unlink(join(targetDirReal, oldStyleRefFile)).catch(() => {})
+      }
     } catch (err) {
       for (const tmp of tmpFiles) await unlink(tmp).catch(() => {})
       if (!metaReplaced) {
         if (previewReplaced && newPreview) {
           if (oldPreviewBuf !== null) await writeFile(join(targetDirReal, newPreview.previewFile), oldPreviewBuf, { mode: 0o600 }).catch(() => {})
           else if (oldPreviewFile !== newPreview.previewFile) await unlink(join(targetDirReal, newPreview.previewFile)).catch(() => {})
+        }
+        if (styleRefReplaced && newStyleRef) {
+          if (oldStyleRefBuf !== null) await writeFile(join(targetDirReal, newStyleRef.styleReferenceFile), oldStyleRefBuf, { mode: 0o600 }).catch(() => {})
+          else if (oldStyleRefFile !== newStyleRef.styleReferenceFile) await unlink(join(targetDirReal, newStyleRef.styleReferenceFile)).catch(() => {})
         }
         if (templateReplaced) await writeFile(templatePath, oldTemplateRaw, { mode: 0o600 }).catch(() => {})
         if (guidanceReplaced) {
@@ -586,7 +713,14 @@ export async function saveCustomCoverStyle(root, input, opts = {}) {
       }
       throw err
     }
-    return { ...meta, source: 'custom', template: validated.template, guidance: validated.guidance, slots: validated.slots }
+    return {
+      ...meta,
+      source: 'custom',
+      hasStyleReference: Boolean(nextStyleRefFile),
+      template: validated.template,
+      guidance: validated.guidance,
+      slots: validated.slots,
+    }
   })
 
   if (consumedDraftPath) {
@@ -647,21 +781,32 @@ function validateReferenceImages(rawList) {
 
 function buildAnalyzeSystemPrompt(blocklistTerms, isRefine) {
   return [
-    '你是一位资深视觉设计师兼生图提示词架构师，负责把用户提供的封面参考图和/或文字诉求拆解成一套可长期复用的 21:9 公众号宽幅封面提示词模板。',
+    '你是一位资深视觉设计师兼生图提示词架构师，负责把用户提供的封面参考图和/或文字诉求拆解成一套工程级、可长期复用的 21:9 公众号宽幅封面提示词模板。',
     isRefine
-      ? '当前处于「自然语言微调模式」：请以用户提供的最新草稿（可能已被用户手动编辑过）为基线，只根据用户的微调指令做针对性调整，保留用户满意的其他设定，不要推倒重来。'
-      : '当前处于「新建拆解模式」：请从参考图（如有）与用户诉求中提炼可迁移的视觉语言（底色与材质、主色与强调色 HEX、版面构图比例、字体气质与字重、装饰元素、光影与氛围）。严禁把参考图里的原文章标题、原品牌名、原陌生人的相貌和衣服写死进模板。',
+      ? '当前处于「自然语言微调模式」：请以用户提供的最新草稿（可能已被用户手动编辑过）为基线，只根据用户的微调指令做针对性调整，保留用户满意的其他设定，不要推倒重来；同时保持分块结构化写法。'
+      : '当前处于「新建拆解模式」：请像视觉艺术总监一样精确反推参考图（如有）与用户诉求的可迁移视觉语言——底色与材质颗粒、精确 HEX 色值与禁止漂移色、版面分区百分比与留白边距、字体字重/倾斜/描边/底块、核心视觉主体的媒介形态与光影关系、以及必须禁止的干扰元素。严禁把参考图里的原文章标题、原品牌名、原具体道具名称、原陌生人的相貌和衣服写死进模板。',
     '输出必须是严格合法的单个 JSON 对象，不得包含多余说明：',
     JSON.stringify({
       name: '简短中文风格名（1-16字）',
       description: '一句话视觉语言与适用场景简介（1-80字）',
-      usePortrait: true,
-      template: '完整可复用的 21:9 生图提示词模板，包含固定视觉规则与至少 2 个 {{占位符}}',
-      guidance: '给后续文章填词阶段看的简短规则（如每行标题字数上限、视觉元素选材要求等）',
+      usePortrait: false,
+      template: '按下方分块规范编写的 21:9 生图提示词模板，包含固定视觉规范与至少 2 个 {{占位符}}',
+      guidance: '给后续文章填词 LLM 看的选词规则、字数上限与具象视觉隐喻举例（只放这里，绝不放进 template）',
     }, null, 2),
-    '硬性质量要求：',
+    '【template 必须采用的工程级分块结构（优先英文结构标签 + 简洁精确的视觉指令，中文文字槽位放在引号内）】',
+    [
+      '1. 开篇 1-2 句：A wide-format 21:9 article cover banner... 精准定义媒介与审美气质（如 flat risograph/screen-print poster / dark cinematic movie poster / clean editorial paper collage）。',
+      '2. COLOR SYSTEM (fixed): 列出 Background、Primary type、Accent 的精确 HEX 色值，并写明 NOT ... 排除容易漂移的颜色（如 NOT navy, NOT purple, NOT neon）。',
+      '3. LAYOUT: 用精确百分比描述左右或上下分区、层级与视觉重心，并强制保留上下左右安全留白（keep all text and focal elements well inside the central safe area with breathing room from top and bottom edges），避免大字贴边被裁切。',
+      '4. TYPOGRAPHY: 写清字重、是否斜体、字距、描边/阴影/高亮底块/双色拆分方式；若标题中有强调色词，必须拆成明确的两个槽位（例如 "{{主标题普通部分}}" in white + "{{主标题高亮词}}" in #FF5A3C），不要只写模糊的"可搭配强调色"。',
+      '5. VISUAL SUBJECT: 写清主视觉的呈现媒介（平涂矢量/粗颗粒版画/电影级暗调写实/微缩手作等）、尺寸占比、空间前后层次与打光方式，并用 {{...}} 承接动态主体。',
+      '6. TEXT IN THE IMAGE (render exactly these texts, each only once, and no other text): 逐行编号列出画面里唯一允许出现的全部文字槽位（含颜色与底块），并在末尾写明：Do not render any hex codes, color names, layout labels, or extra unreadable UI text.',
+      '7. STYLE & NEGATIVES: 写清核心材质与光影，以及与参考图匹配的负向排除项（例如扁平风必须写 no 3D, no gradients, no photorealism；无 UI 截图风写 no tiny gibberish screen text, no cluttered icons；固定写 no author watermark or signature text）。',
+      '8. 结尾固定：ASPECT RATIO: 21:9 (wide cinematic banner format)',
+    ].join('\n'),
+    '硬性质量与隔离要求：',
     `1. template 必须包含至少 ${CUSTOM_COVER_STYLE_LIMITS.minSlots} 个 {{...}} 动态占位符（至少覆盖主标题和画面核心视觉元素），便于后续每篇不同文章填空复用。`,
-    '2. 画幅固定为 21:9 宽幅横幅，构图与文字放在中央安全区，无作者水印。',
+    '2. 【严格隔离 template 与 guidance】template 在替换 {{...}} 后会原文直接发给生图模型，因此 template 中严禁出现任何括号举例（如"例如..."、"比如 Kimi 对应月球"）、元说明（如"根据文章主题选择"）、或"可选/建议/可以"这类不确定措辞！所有字数建议、选材规则、具体联想案例（如 Kimi→月球）必须全部写进 guidance 字段。',
     '3. 当 usePortrait 为 true 时，template 必须在人物描述处使用 [[SUBJECT]] 与 [[OUTFIT]]（英文模板）或 [[人物]] 与 [[服装]]（中文模板），由宿主按用户设置填入博主本人与服装，绝不能写死固定性别、长相或服装。',
     '4. 当 usePortrait 为 false 时，template 中不得包含 [[SUBJECT]]、[[OUTFIT]]、[[人物]]、[[服装]]、[[玩偶]] 或真人肖像参考图描述。',
     `5. template 中严禁出现以下封面禁用词（含否定写法）：${blocklistTerms.join(', ')}`,
@@ -765,7 +910,7 @@ export async function analyzeCustomCoverStyle(ctx, { referenceImages = [], requi
   throw httpError(502, `模型未生成合格的风格模板：${issue}`)
 }
 
-export async function previewCustomCoverStyle(ctx, root, settings, { draft, testTitle, testMarkdown = '', resolution = '1K', onStage } = {}, fetchImpl = fetch) {
+export async function previewCustomCoverStyle(ctx, root, settings, { draft, testTitle, testMarkdown = '', resolution = '1K', styleReferenceImage = null, onStage } = {}, fetchImpl = fetch) {
   if (!COVER_RESOLUTIONS.includes(resolution)) {
     throw httpError(400, '请选择有效的试生成分辨率（1K、1.5K 或 2K）。')
   }
@@ -796,13 +941,27 @@ export async function previewCustomCoverStyle(ctx, root, settings, { draft, test
   if (!apiKey) throw httpError(400, meta.missingKeyError)
 
   const usePortrait = Boolean(draft?.usePortrait)
-  const referenceImage = usePortrait ? (settings?.portraitUrl || null) : null
+  const useStyleReference = !usePortrait && Boolean(draft?.useStyleReference)
+  let referenceImage = null
+  let referenceKind = null
+  if (usePortrait) {
+    referenceImage = settings?.portraitUrl || null
+    referenceKind = referenceImage ? 'portrait' : null
+  } else if (useStyleReference) {
+    if (styleReferenceImage) {
+      referenceImage = prepareStyleReferenceImage(styleReferenceImage).dataUrl
+    } else if (isCustomStyleId(draft?.id)) {
+      referenceImage = await readCustomStyleReferenceDataUrl(root, draft.id)
+    }
+    referenceKind = referenceImage ? 'style' : null
+  }
   const title = (typeof testTitle === 'string' ? testTitle.trim().slice(0, 120) : '') || DEFAULT_TEST_TITLE
   const markdown = (typeof testMarkdown === 'string' ? testMarkdown.trim().slice(0, 1200) : '') || `# ${title}\n\n${title}`
 
   onStage?.('prompt')
   const prompt = await coverPrompt(ctx, title, markdown, 'custom-preview', settings?.persona ?? {}, {
-    hasReference: Boolean(referenceImage),
+    hasReference: referenceKind === 'portrait',
+    referenceKind,
     customStyle: {
       id: 'custom-preview',
       name: typeof draft?.name === 'string' ? draft.name.trim() : '自定义风格',

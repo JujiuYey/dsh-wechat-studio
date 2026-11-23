@@ -9,7 +9,7 @@ import { createStandaloneCtx, resolveStandaloneLlmConfig } from './cli-llm.js'
 import { COVER_FORMATS, COVER_PROVIDERS, COVER_RESOLUTIONS, providerFormats, providerMeta } from './cover-options.js'
 import { buildCoverPromptRequest } from './cover-prompt.js'
 import { COVER_STYLES } from './cover-styles.js'
-import { listCoverStyles, resolveCoverStyle } from './custom-cover-styles.js'
+import { listCoverStyles, resolveCoverReferenceImage, resolveCoverStyle } from './custom-cover-styles.js'
 import { coverPrompt, generateCoverImage, readCover, saveCover } from './cover.js'
 import { generateDerivative, prepareDerivePrompt } from './derive.js'
 import { toPortableMarkdown } from './derive-markdown.js'
@@ -664,7 +664,7 @@ async function handleCover(argv, io, secrets) {
   if (!values['prompt-only'] && !providerFormats(provider).includes(values.format)) {
     throw new UsageError(`提供方 ${provider} 仅支持格式：${providerFormats(provider).join(', ')}`)
   }
-  const referenceImage = resolvedStyle.usePortrait ? (settings.portraitUrl || null) : null
+  const { referenceImage, referenceKind } = await resolveCoverReferenceImage(dataDir, resolvedStyle, settings)
   const customStyle = resolvedStyle.source === 'custom' ? resolvedStyle : null
 
   let prompt
@@ -677,7 +677,7 @@ async function handleCover(argv, io, secrets) {
     const title = parsed.title || (file === '-' ? '未命名文章' : basename(file, '.md'))
     if (values['prompt-only']) {
       const req = await buildCoverPromptRequest(title, markdown, resolvedStyle.id, settings.persona, {
-        hasReference: Boolean(referenceImage),
+        hasReference: referenceKind === 'portrait',
         customStyle,
       })
       return emitSuccess(io, values.json, {
@@ -695,7 +695,8 @@ async function handleCover(argv, io, secrets) {
     }
     const ctx = resolveCtx(io, values, secrets)
     prompt = await coverPrompt(ctx, title, markdown, resolvedStyle.id, settings.persona, {
-      hasReference: Boolean(referenceImage),
+      hasReference: referenceKind === 'portrait',
+      referenceKind,
       customStyle,
     })
   }

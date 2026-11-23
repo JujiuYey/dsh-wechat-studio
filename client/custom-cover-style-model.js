@@ -4,11 +4,14 @@ export const DEFAULT_TEST_COVER_TITLE = '我用 AI 搭了一套自动化写作�
 
 export function createWizardDraft(initial = {}) {
   const src = initial && typeof initial === 'object' ? initial : {}
+  const usePortrait = Boolean(src.usePortrait)
   return {
     id: typeof src.id === 'string' ? src.id : '',
     name: typeof src.name === 'string' ? src.name : '',
     description: typeof src.description === 'string' ? src.description : '',
-    usePortrait: Boolean(src.usePortrait),
+    usePortrait,
+    useStyleReference: !usePortrait && Boolean(src.useStyleReference),
+    hasStyleReference: Boolean(src.hasStyleReference),
     userRequirement: typeof src.userRequirement === 'string' ? src.userRequirement : '',
     template: typeof src.template === 'string' ? src.template : '',
     guidance: typeof src.guidance === 'string' ? src.guidance : '',
@@ -33,6 +36,7 @@ export function isWizardDirty(initial, current) {
   if (initial.name !== current.name) return true
   if (initial.description !== current.description) return true
   if (Boolean(initial.usePortrait) !== Boolean(current.usePortrait)) return true
+  if (Boolean(initial.useStyleReference) !== Boolean(current.useStyleReference)) return true
   if (initial.userRequirement !== current.userRequirement) return true
   if (initial.template !== current.template) return true
   if (initial.guidance !== current.guidance) return true
@@ -47,6 +51,7 @@ export function markPreviewStaleOnDraftChange(prev, next) {
   if (prev?.template !== next?.template) return true
   if (prev?.guidance !== next?.guidance) return true
   if (Boolean(prev?.usePortrait) !== Boolean(next?.usePortrait)) return true
+  if (Boolean(prev?.useStyleReference) !== Boolean(next?.useStyleReference)) return true
   if (!sameStringArray(prev?.referenceImages ?? [], next?.referenceImages ?? [])) return true
   return false
 }
@@ -79,16 +84,22 @@ export function buildRefinePayload(current, adjustment) {
 }
 
 export function buildSavePayload(current, mode = 'create') {
+  const usePortrait = Boolean(current?.usePortrait)
+  const useStyleReference = !usePortrait && Boolean(current?.useStyleReference)
   const payload = {
     name: typeof current?.name === 'string' ? current.name.trim() : '',
     description: typeof current?.description === 'string' ? current.description.trim() : '',
-    usePortrait: Boolean(current?.usePortrait),
+    usePortrait,
+    useStyleReference,
     userRequirement: typeof current?.userRequirement === 'string' ? current.userRequirement.trim() : '',
     template: typeof current?.template === 'string' ? current.template : '',
     guidance: typeof current?.guidance === 'string' ? current.guidance : '',
   }
   if (mode === 'edit' && current?.id) {
     payload.id = current.id
+  }
+  if (Array.isArray(current?.referenceImages) && current.referenceImages.length > 0 && !usePortrait) {
+    payload.styleReferenceImage = current.referenceImages[0]
   }
   if (current?.previewDraftToken) {
     payload.previewDraftToken = current.previewDraftToken

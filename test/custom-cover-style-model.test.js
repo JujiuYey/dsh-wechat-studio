@@ -155,4 +155,27 @@ test('buildSavePayload：严格按 试生成样图 > 本次新上传参考图 > 
   const p4 = buildSavePayload(editNewRef, 'edit')
   assert.equal(p4.id, 'custom-abcd1234')
   assert.equal(p4.fallbackReferenceImage, ref2)
+  assert.equal(p4.styleReferenceImage, ref2)
+
+  // 5. useStyleReference 与 usePortrait 互斥，且 dirty/stale 正确追踪
+  const styleRefDraft = createWizardDraft({
+    name: '红黑风',
+    description: '描',
+    usePortrait: false,
+    useStyleReference: true,
+    template: '21:9 {{a}} {{b}}',
+    referenceImages: [ref1],
+    previewUrl: 'wechat-studio/cover-styles/draft-preview?token=1',
+  })
+  assert.equal(isWizardDirty(createWizardDraft({ ...styleRefDraft, useStyleReference: false }), styleRefDraft), true)
+  assert.equal(markPreviewStaleOnDraftChange(createWizardDraft({ ...styleRefDraft, useStyleReference: false }), styleRefDraft), true)
+  const p5 = buildSavePayload(styleRefDraft, 'create')
+  assert.equal(p5.useStyleReference, true)
+  assert.equal(p5.styleReferenceImage, ref1)
+
+  const portraitDraft = createWizardDraft({ ...styleRefDraft, usePortrait: true, useStyleReference: true })
+  assert.equal(portraitDraft.useStyleReference, false)
+  const p6 = buildSavePayload(portraitDraft, 'create')
+  assert.equal(p6.useStyleReference, false)
+  assert.equal('styleReferenceImage' in p6, false)
 })

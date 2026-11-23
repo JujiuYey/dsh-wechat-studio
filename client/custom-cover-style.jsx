@@ -102,7 +102,7 @@ export function CustomCoverStyleCard() {
             </span>
           </div>
           <p className="ws-muted">
-            上传网上喜欢的封面参考图或写下视觉诉求，AI 拆解为可复用的 21:9 模板并支持现场试图；保存后可在每篇文章的「选择封面风格」中直接复用。
+            上传网上喜欢的封面参考图或写下视觉诉求，AI 拆解为可复用的 21:9 模板并支持现场试生成；保存后可在每篇文章的「选择封面风格」中直接复用。
           </p>
         </div>
       </div>
@@ -133,7 +133,9 @@ export function CustomCoverStyleCard() {
                 <strong>{item.name}</strong>
                 <p className="ws-muted ws-small">{item.description}</p>
                 <div className="ws-custom-cover-item-foot">
-                  <span className="ws-muted ws-small">{item.usePortrait ? '含博主出镜' : '纯视觉/无真人'}</span>
+                  <span className="ws-muted ws-small">
+                    {item.usePortrait ? '含博主出镜' : item.useStyleReference ? '纯视觉 · 风格参考图' : '纯视觉/无真人'}
+                  </span>
                   <span className="ws-custom-cover-item-actions">
                     <button
                       type="button"
@@ -338,6 +340,7 @@ export function CustomCoverStyleWizard() {
         name: res.draft.name,
         description: res.draft.description,
         usePortrait: res.draft.usePortrait,
+        useStyleReference: res.draft.usePortrait ? false : prev.useStyleReference,
         template: res.draft.template,
         guidance: res.draft.guidance,
       }))
@@ -363,6 +366,7 @@ export function CustomCoverStyleWizard() {
         name: res.draft.name,
         description: res.draft.description,
         usePortrait: res.draft.usePortrait,
+        useStyleReference: res.draft.usePortrait ? false : prev.useStyleReference,
         template: res.draft.template,
         guidance: res.draft.guidance,
       }))
@@ -385,11 +389,16 @@ export function CustomCoverStyleWizard() {
     try {
       const job = await startCustomCoverStyleTest({
         draft: {
+          id: draft.id || undefined,
           name: draft.name,
           template: draft.template,
           guidance: draft.guidance,
           usePortrait: draft.usePortrait,
+          useStyleReference: !draft.usePortrait && Boolean(draft.useStyleReference),
         },
+        styleReferenceImage: (!draft.usePortrait && draft.useStyleReference && draft.referenceImages[0])
+          ? draft.referenceImages[0]
+          : undefined,
         testTitle: testTitle.trim() || DEFAULT_TEST_COVER_TITLE,
         testMarkdown: articlePreviewMarkdown(currentArticle),
         resolution,
@@ -588,10 +597,25 @@ export function CustomCoverStyleWizard() {
                     type="checkbox"
                     checked={draft.usePortrait}
                     disabled={busy === 'refine'}
-                    onChange={e => patchDraft({ usePortrait: e.target.checked })}
+                    onChange={e => patchDraft({
+                      usePortrait: e.target.checked,
+                      useStyleReference: e.target.checked ? false : draft.useStyleReference,
+                    })}
                   />
                   <span>包含博主本人出镜（自动使用「设置 · 封面生成」中的人物参考照与服装设定）</span>
                 </label>
+
+                {!draft.usePortrait && (draft.referenceImages.length > 0 || draft.hasStyleReference) ? (
+                  <label className="ws-check ws-custom-cover-portrait-toggle">
+                    <input
+                      type="checkbox"
+                      checked={draft.useStyleReference}
+                      disabled={busy === 'refine'}
+                      onChange={e => patchDraft({ useStyleReference: e.target.checked })}
+                    />
+                    <span>生图时携带首张参考图作为风格参考（质感与字体更贴近原图；若出现原图文字残留可关闭）</span>
+                  </label>
+                ) : null}
 
                 {portraitMismatch ? (
                   <p className="ws-warn ws-small" role="status">
