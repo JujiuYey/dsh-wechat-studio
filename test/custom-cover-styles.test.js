@@ -6,10 +6,12 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 import { deflateSync } from 'node:zlib'
 import {
+  analyzeCustomCoverStyle,
   CUSTOM_STYLE_PREVIEW_FILES,
   deleteCustomCoverStyle,
   detectImageContentType,
   listCoverStyles,
+  previewCustomCoverStyle,
   pruneExpiredDrafts,
   readCustomCoverStyle,
   readCustomStylePreview,
@@ -19,6 +21,7 @@ import {
   saveDraftPreview,
   validateCustomStyleInput,
 } from '../src/custom-cover-styles.js'
+import { buildCoverPromptRequest, coverPrompt } from '../src/cover-prompt.js'
 import jpeg from 'jpeg-js'
 
 const crcTable = (() => {
@@ -404,4 +407,234 @@ test('修复回归：缺失 meta.json 返 404、更新前软链拒绝、超长�
     saveCustomCoverStyle(root, { id: saved.style.id, name: '改', description: '描', template: VALID_TEMPLATE, previewDraftToken: d2 }),
     err => err.status === 400,
   )
+})
+
+function mockLlmCtx({ replies, modalities = ['text', 'image'], onCall = null }) {
+  let idx = 0
+  return {
+    get: name => ({
+      agentDefaultModel: { currentSelection: () => ({ provider: 'p', model: 'm' }) },
+      llm: {
+        listModels: async () => [{ id: 'm', ...(modalities ? { inputModalities: modalities } : {}) }],
+        prepareCall: async () => ({
+          config: {},
+          async *stream(req) {
+            onCall?.(req)
+            const next = replies[Math.min(idx++, replies.length - 1)]
+            if (next instanceof Error) throw next
+            yield { type: 'text-delta', text: typeof next === 'string' ? next : JSON.stringify(next) }
+            yield { type: 'finish', reason: { kind: 'stop' } }
+          },
+        }),
+      },
+    }[name] ?? null),
+  }
+}
+
+test('自定义风格中性填词：不注入内置 SKILL.md，按 usePortrait 展开人物占位符，反引号无截断且禁用词自动重试', async () => {
+  const customStyle = {
+    id: 'custom-11223344',
+    name: '居中极简风',
+    usePortrait: true,
+    template: '21:9 极简白底，主标题 {{主标题}}，视觉 {{视觉主体}}，人物 [[SUBJECT]] 穿 [[OUTFIT]]。\n```fence\nkeep\n```',
+    guidance: '标题限 10 字以内',
+  }
+  const req = await buildCoverPromptRequest('测试文章', '正文内容', customStyle.id, { gender: 'female', outfit: 'photo' }, { hasReference: true, customStyle })
+  assert.doesNotMatch(req.system, /林月半子|七种风格|左字右人/, '自定义风格绝不能注入内置 SKILL.md')
+  assert.match(req.system, /标题限 10 字以内/)
+  assert.deepEqual(req.slots, ['主标题', '视觉主体'])
+
+  // 第 1 次返回含禁用词 excited，第 2 次返回正常值
+  const calls = []
+  const ctx = mockLlmCtx({
+    replies: [
+      { values: ['an excited headline', '极简几何块'] },
+      { values: ['冷静复盘', '极简几何块'] },
+    ],
+    onCall: r => calls.push(r),
+  })
+  const prompt = await coverPrompt(ctx, '测试文章', '正文内容', customStyle.id, { gender: 'female', outfit: 'photo' }, { hasReference: true, customStyle })
+  assert.equal(calls.length, 2)
+  assert.match(prompt, /冷静复盘/)
+  assert.match(prompt, /reference image/)
+  assert.match(prompt, /```fence/)
+  assert.ok(!/\[\[SUBJECT\]\]|\[\[OUTFIT\]\]/.test(prompt))
+
+  // usePortrait: false 时不带参考图描述
+  const noPortraitStyle = {
+    id: 'custom-55667788',
+    name: '纯物件风',
+    usePortrait: false,
+    template: '21:9 暖白底，标题 {{主标题}}，物件 {{核心物件}}',
+    guidance: '',
+  }
+  const ctx2 = mockLlmCtx({ replies: [{ values: ['纯标题', '陶瓷杯'] }] })
+  const prompt2 = await coverPrompt(ctx2, '测试', '正文', noPortraitStyle.id, {}, { hasReference: false, customStyle: noPortraitStyle })
+  assert.doesNotMatch(prompt2, /参考图|reference image/)
+})
+
+test('analyzeCustomCoverStyle：输入校验、严格视觉门禁、质量重试与最新草稿微调', async () => {
+  const refImg = `data:image/png;base64,${makePng(94, 40).toString('base64')}`
+
+  // 空输入报错
+  await assert.rejects(
+    analyzeCustomCoverStyle(mockLlmCtx({ replies: [] }), { referenceImages: [], requirement: '   ' }),
+    err => err.status === 400,
+  )
+  // 超 3 张或非法 Data URL 或超 2 MB 报错
+  await assert.rejects(
+    analyzeCustomCoverStyle(mockLlmCtx({ replies: [] }), { referenceImages: [refImg, refImg, refImg, refImg] }),
+    err => err.status === 400,
+  )
+  await assert.rejects(
+    analyzeCustomCoverStyle(mockLlmCtx({ replies: [] }), { referenceImages: ['not-a-data-url'] }),
+    err => err.status === 400,
+  )
+  const hugeImg = `data:image/png;base64,${Buffer.alloc(2 * 1024 * 1024 + 16, 1).toString('base64')}`
+  await assert.rejects(
+    analyzeCustomCoverStyle(mockLlmCtx({ replies: [] }), { referenceImages: [hugeImg] }),
+    err => err.status === 400,
+  )
+
+  // 纯文本模型带参考图 -> 严格门禁直接 400 且不调用模型
+  let called = 0
+  const textOnlyCtx = mockLlmCtx({ replies: [{}], modalities: ['text'], onCall: () => { called++ } })
+  await assert.rejects(
+    analyzeCustomCoverStyle(textOnlyCtx, { referenceImages: [refImg], requirement: '模仿这张图' }),
+    err => err.status === 400 && /不支持识图/.test(err.message),
+  )
+  assert.equal(called, 0)
+
+  // 运行时报图片不支持 -> 不静默降级纯文本
+  let rtCalls = 0
+  const rtFailCtx = mockLlmCtx({
+    replies: [new Error('model does not support images'), { name: '瞎编', description: '瞎编', usePortrait: false, template: '{{a}} {{b}}', guidance: '' }],
+    modalities: null,
+    onCall: () => { rtCalls++ },
+  })
+  await assert.rejects(
+    analyzeCustomCoverStyle(rtFailCtx, { referenceImages: [refImg] }),
+    err => err.status === 400 && /不支持图片输入/.test(err.message),
+  )
+  assert.equal(rtCalls, 1)
+
+  // 首次返回不合规（只有 1 个占位符）-> 自动带错误原因重试第 2 次并成功
+  const retryCalls = []
+  const retryCtx = mockLlmCtx({
+    replies: [
+      { name: '杂志风', description: '黑金质感', usePortrait: false, template: '只有一个 {{主标题}}', guidance: '' },
+      { name: '黑金杂志风', description: '深炭黑底与香槟金大字', usePortrait: false, template: '21:9 黑底金字，主标题 {{主标题}}，视觉 {{视觉主体}}', guidance: '每行限 8 字' },
+    ],
+    onCall: r => retryCalls.push(r),
+  })
+  const analyzed = await analyzeCustomCoverStyle(retryCtx, { referenceImages: [refImg], requirement: '黑金高级感' })
+  assert.equal(retryCalls.length, 2)
+  assert.equal(analyzed.draft.name, '黑金杂志风')
+  assert.equal(analyzed.draft.usePortrait, false)
+  assert.deepEqual(analyzed.draft.slots, ['主标题', '视觉主体'])
+
+  // 微调模式：确认把用户手改后的最新 draft + adjustment + referenceImages 一并送给模型
+  const refineCalls = []
+  const refineCtx = mockLlmCtx({
+    replies: [{
+      name: '黑金杂志风',
+      description: '亮白纸感黑金大字',
+      usePortrait: true,
+      template: '21:9 亮白纸底，标题 {{主标题}}，主体 {{视觉主体}}，人物 [[SUBJECT]] 穿 [[OUTFIT]]',
+      guidance: '保留大字',
+    }],
+    onCall: r => refineCalls.push(r),
+  })
+  const editedDraft = {
+    name: '用户手改名',
+    description: '用户手改简介',
+    usePortrait: true,
+    template: '用户手改后的模板 {{主标题}} 与 {{视觉主体}}',
+    guidance: '用户手改指引',
+  }
+  const refined = await analyzeCustomCoverStyle(refineCtx, {
+    referenceImages: [refImg],
+    draft: editedDraft,
+    adjustment: '把背景调成亮白纸感，加上人物出镜',
+  })
+  assert.equal(refineCalls.length, 1)
+  const sentUserText = refineCalls[0].messages[0].content[0].text
+  assert.match(sentUserText, /用户手改后的模板/)
+  assert.match(sentUserText, /把背景调成亮白纸感/)
+  assert.ok(refineCalls[0].messages[0].content.some(p => p.type === 'image'), '微调模式应携带会话参考图')
+  assert.equal(refined.draft.usePortrait, true)
+})
+
+test('previewCustomCoverStyle：分阶段回调、usePortrait 透传肖像照、裁切存草稿与 MiniMax 超时不重试', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'ws-custom-style-preview-'))
+  const png = makePng(100, 40)
+  const stages = []
+  const fetchCalls = []
+  const fetchImpl = async (url, init) => {
+    fetchCalls.push({ url, init })
+    return Response.json({ data: [{ b64_json: png.toString('base64') }] })
+  }
+  const llmCtx = mockLlmCtx({ replies: [{ values: ['AI 写作流', '极简终端界面'] }] })
+  const settings = {
+    coverProvider: 'ark',
+    arkModel: 'doubao-seedream-5-5-261028',
+    arkKey: 'sk-ark',
+    portraitUrl: 'https://example.com/me.png',
+    persona: { gender: 'auto', outfit: 'photo', outfitText: '', appearance: '' },
+  }
+
+  // 缺 Key 报错
+  await assert.rejects(
+    previewCustomCoverStyle(llmCtx, root, { ...settings, arkKey: '' }, {
+      draft: { template: '21:9 标题 {{主标题}} 画面 {{画面}}', guidance: '', usePortrait: false },
+      testTitle: '测试',
+    }, fetchImpl),
+    err => err.status === 400 && /API Key/.test(err.message),
+  )
+
+  // usePortrait: true -> 传 portraitUrl
+  const resWithPortrait = await previewCustomCoverStyle(llmCtx, root, settings, {
+    draft: {
+      template: '21:9 标题 {{主标题}}，视觉 {{视觉}}，人物 [[SUBJECT]] 穿 [[OUTFIT]]',
+      guidance: '',
+      usePortrait: true,
+    },
+    testTitle: '我用 AI 搭了一套自动化写作流',
+    resolution: '1K',
+    onStage: s => stages.push(s),
+  }, fetchImpl)
+  assert.deepEqual(stages, ['prompt', 'generating', 'saving'])
+  assert.equal(JSON.parse(fetchCalls[0].init.body).image, 'https://example.com/me.png')
+  assert.equal(resWithPortrait.provider, 'ark')
+  const savedDraft = await readDraftPreview(root, resWithPortrait.draftToken)
+  assert.equal(savedDraft.contentType, 'image/png')
+
+  // usePortrait: false -> 不传 portraitUrl
+  const llmCtx2 = mockLlmCtx({ replies: [{ values: ['纯物件标题', '沙漏'] }] })
+  await previewCustomCoverStyle(llmCtx2, root, settings, {
+    draft: { template: '21:9 标题 {{主标题}}，视觉 {{视觉}}', guidance: '', usePortrait: false },
+    testTitle: '纯物件测试',
+  }, fetchImpl)
+  assert.equal(JSON.parse(fetchCalls[1].init.body).image, undefined)
+
+  // MiniMax 超时原样透传 MINIMAX_TIMEOUT 且不重试
+  let mmCalls = 0
+  const mmFetch = async () => {
+    mmCalls++
+    throw new DOMException('timeout', 'TimeoutError')
+  }
+  const llmCtx3 = mockLlmCtx({ replies: [{ values: ['标题', '视觉'] }] })
+  await assert.rejects(
+    previewCustomCoverStyle(llmCtx3, root, {
+      ...settings,
+      coverProvider: 'minimax',
+      minimaxModel: 'MiniMax-H3-Image',
+      minimaxKey: 'sk-mm',
+    }, {
+      draft: { template: '21:9 标题 {{主标题}}，视觉 {{视觉}}', guidance: '', usePortrait: false },
+      testTitle: '超时测试',
+    }, mmFetch),
+    err => err.code === 'MINIMAX_TIMEOUT' && err.nonRetryable === true && /600 秒.*计费/.test(err.message),
+  )
+  assert.equal(mmCalls, 1)
 })

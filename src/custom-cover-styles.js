@@ -2,8 +2,11 @@
 import { randomBytes, randomUUID } from 'node:crypto'
 import { lstat, mkdir, readdir, readFile, realpath, rename, rm, unlink, writeFile } from 'node:fs/promises'
 import { join, sep } from 'node:path'
-import { COVER_STYLES, CUSTOM_COVER_STYLE_LIMITS, extractTemplateSlots, isCustomStyleId } from './cover-styles.js'
-import { findBlocked, loadCoverBlocklist } from './cover-prompt.js'
+import { callModel, extractJson, modelVisionSupport } from './ai.js'
+import { generateCoverImage } from './cover.js'
+import { COVER_RESOLUTIONS, providerFormats, providerMeta } from './cover-options.js'
+import { COVER_STYLES, CUSTOM_COVER_STYLE_LIMITS, extractTemplateSlots, hasPortraitMarkers, isCustomStyleId } from './cover-styles.js'
+import { coverPrompt, findBlocked, loadCoverBlocklist } from './cover-prompt.js'
 import { parseDataImageUri } from './derive-shared.js'
 import { withFileLock } from './store.js'
 
@@ -613,4 +616,211 @@ export async function deleteCustomCoverStyle(root, id) {
     await rm(targetDir, { recursive: true, force: true })
   })
   return listCoverStyles(root)
+}
+
+const DEFAULT_TEST_TITLE = '我用 AI 搭了一套自动化写作流'
+const ANY_PERSONA_MARKER_RE = /\[\[(?:SUBJECT|OUTFIT|人物|服装|玩偶)\]\]/
+
+function validateReferenceImages(rawList) {
+  if (rawList === undefined || rawList === null) return []
+  if (!Array.isArray(rawList)) throw httpError(400, '参考图列表格式无效。')
+  if (rawList.length > CUSTOM_COVER_STYLE_LIMITS.maxReferenceImages) {
+    throw httpError(400, `最多上传 ${CUSTOM_COVER_STYLE_LIMITS.maxReferenceImages} 张参考封面图。`)
+  }
+  const out = []
+  for (let i = 0; i < rawList.length; i++) {
+    const dataUrl = typeof rawList[i] === 'string' ? rawList[i] : ''
+    const parsed = parseDataImageUri(dataUrl)
+    if (!parsed) throw httpError(400, `第 ${i + 1} 张参考图不是有效的 PNG/JPEG/WebP 图片。`)
+    const bytes = Buffer.from(parsed.data, 'base64')
+    if (!bytes.length || bytes.length > CUSTOM_COVER_STYLE_LIMITS.maxReferenceBytes) {
+      throw httpError(400, `第 ${i + 1} 张参考图体积超过 2 MB 上限。`)
+    }
+    out.push({ id: `ref-${i + 1}`, dataUrl })
+  }
+  return out
+}
+
+function buildAnalyzeSystemPrompt(blocklistTerms, isRefine) {
+  return [
+    '你是一位资深视觉设计师兼生图提示词架构师，负责把用户提供的封面参考图和/或文字诉求拆解成一套可长期复用的 21:9（47:20）公众号封面提示词模板。',
+    isRefine
+      ? '当前处于「自然语言微调模式」：请以用户提供的最新草稿（可能已被用户手动编辑过）为基线，只根据用户的微调指令做针对性调整，保留用户满意的其他设定，不要推倒重来。'
+      : '当前处于「新建拆解模式」：请从参考图（如有）与用户诉求中提炼可迁移的视觉语言（底色与材质、主色与强调色 HEX、版面构图比例、字体气质与字重、装饰元素、光影与氛围）。严禁把参考图里的原文章标题、原品牌名、原陌生人的相貌和衣服写死进模板。',
+    '输出必须是严格合法的单个 JSON 对象，不得包含多余说明：',
+    JSON.stringify({
+      name: '简短中文风格名（1-16字）',
+      description: '一句话视觉语言与适用场景简介（1-80字）',
+      usePortrait: true,
+      template: '完整可复用的 21:9 生图提示词模板，包含固定视觉规则与至少 2 个 {{占位符}}',
+      guidance: '给后续文章填词阶段看的简短规则（如每行标题字数上限、视觉元素选材要求等）',
+    }, null, 2),
+    '硬性质量要求：',
+    `1. template 必须包含至少 ${CUSTOM_COVER_STYLE_LIMITS.minSlots} 个 {{...}} 动态占位符（至少覆盖主标题和画面核心视觉元素），便于后续每篇不同文章填空复用。`,
+    '2. 画幅固定为 21:9（47:20）宽幅横幅，构图与文字放在中央安全区，无作者水印。',
+    '3. 当 usePortrait 为 true 时，template 必须在人物描述处使用 [[SUBJECT]] 与 [[OUTFIT]]（英文模板）或 [[人物]] 与 [[服装]]（中文模板），由宿主按用户设置填入博主本人与服装，绝不能写死固定性别、长相或服装。',
+    '4. 当 usePortrait 为 false 时，template 中不得包含 [[SUBJECT]]、[[OUTFIT]]、[[人物]]、[[服装]]、[[玩偶]] 或真人肖像参考图描述。',
+    `5. template 中严禁出现以下封面禁用词（含否定写法）：${blocklistTerms.join(', ')}`,
+  ].join('\n\n')
+}
+
+export async function analyzeCustomCoverStyle(ctx, { referenceImages = [], requirement = '', draft = null, adjustment = '', signal } = {}) {
+  const images = validateReferenceImages(referenceImages)
+  const cleanRequirement = typeof requirement === 'string' ? requirement.trim() : ''
+  const cleanAdjustment = typeof adjustment === 'string' ? adjustment.trim() : ''
+  const isRefine = Boolean(draft && typeof draft === 'object' && cleanAdjustment)
+
+  if (cleanRequirement.length > CUSTOM_COVER_STYLE_LIMITS.maxRequirement) {
+    throw httpError(400, `风格诉求不能超过 ${CUSTOM_COVER_STYLE_LIMITS.maxRequirement} 字。`)
+  }
+  if (cleanAdjustment.length > CUSTOM_COVER_STYLE_LIMITS.maxRequirement) {
+    throw httpError(400, `微调要求不能超过 ${CUSTOM_COVER_STYLE_LIMITS.maxRequirement} 字。`)
+  }
+  if (isRefine) {
+    if (!cleanAdjustment) throw httpError(400, '请填写想要调整的具体要求。')
+  } else if (!images.length && !cleanRequirement) {
+    throw httpError(400, '请至少上传 1 张参考封面图，或填写风格诉求。')
+  }
+
+  if (images.length > 0) {
+    const vision = await modelVisionSupport(ctx)
+    if (vision === false) {
+      throw httpError(400, '当前所选模型不支持识图，请先切换到支持视觉的多模态模型，或移除参考图后仅用文字诉求创建。', { code: 'VISION_UNSUPPORTED' })
+    }
+  }
+
+  const terms = await loadCoverBlocklist()
+  const system = buildAnalyzeSystemPrompt(terms, isRefine)
+  const baseUser = isRefine
+    ? JSON.stringify({
+      mode: 'refine',
+      currentDraft: {
+        name: typeof draft.name === 'string' ? draft.name.trim() : '',
+        description: typeof draft.description === 'string' ? draft.description.trim() : '',
+        usePortrait: Boolean(draft.usePortrait),
+        template: normalizeMultiline(draft.template),
+        guidance: normalizeMultiline(draft.guidance),
+      },
+      adjustment: cleanAdjustment,
+      originalRequirement: cleanRequirement,
+      referenceImageIds: images.map(item => item.id),
+    })
+    : JSON.stringify({
+      mode: 'create',
+      requirement: cleanRequirement,
+      referenceImageIds: images.map(item => item.id),
+    })
+
+  let issue = ''
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const raw = await callModel(ctx, {
+      system,
+      user: issue ? `${baseUser}\n\n上次输出未通过质检，请修正后重新只输出 JSON：${issue}` : baseUser,
+      images,
+      strictImages: images.length > 0,
+      task: 'cover-style-analyze',
+      maxTokens: 4000,
+      signal: signal ?? AbortSignal.timeout(90_000),
+    })
+    const parsed = extractJson(raw)
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      issue = '未能解析出有效的 JSON 对象。'
+      continue
+    }
+    try {
+      const candidate = validateCustomStyleInput({
+        name: typeof parsed.name === 'string' ? parsed.name.trim().slice(0, CUSTOM_COVER_STYLE_LIMITS.maxName) : '',
+        description: typeof parsed.description === 'string' ? parsed.description.trim().slice(0, CUSTOM_COVER_STYLE_LIMITS.maxDescription) : '',
+        usePortrait: Boolean(parsed.usePortrait),
+        userRequirement: cleanRequirement,
+        template: parsed.template,
+        guidance: typeof parsed.guidance === 'string' ? parsed.guidance : '',
+      }, terms)
+      if (candidate.usePortrait && !hasPortraitMarkers(candidate.template)) {
+        issue = 'usePortrait 为 true 时，template 必须包含 [[SUBJECT]]（或 [[人物]]）人物占位符。'
+        continue
+      }
+      if (!candidate.usePortrait && ANY_PERSONA_MARKER_RE.test(candidate.template)) {
+        issue = 'usePortrait 为 false 时，template 不能包含 [[SUBJECT]] / [[OUTFIT]] / [[人物]] / [[服装]] 占位符。'
+        continue
+      }
+      return {
+        draft: {
+          name: candidate.name,
+          description: candidate.description,
+          usePortrait: candidate.usePortrait,
+          template: candidate.template,
+          guidance: candidate.guidance,
+          slots: candidate.slots,
+        },
+      }
+    } catch (err) {
+      issue = err.message || '风格模板格式不合法。'
+    }
+  }
+  throw httpError(502, `模型未生成合格的风格模板：${issue}`)
+}
+
+export async function previewCustomCoverStyle(ctx, root, settings, { draft, testTitle, testMarkdown = '', resolution = '1K', onStage } = {}, fetchImpl = fetch) {
+  if (!COVER_RESOLUTIONS.includes(resolution)) {
+    throw httpError(400, '请选择有效的试生成分辨率（1K、1.5K 或 2K）。')
+  }
+  const terms = await loadCoverBlocklist()
+  const template = normalizeMultiline(draft?.template)
+  if (!template || template.length > CUSTOM_COVER_STYLE_LIMITS.maxTemplate) {
+    throw httpError(400, `提示词模板不能为空，且不超过 ${CUSTOM_COVER_STYLE_LIMITS.maxTemplate} 字。`)
+  }
+  const slots = extractTemplateSlots(template)
+  if (slots.length < CUSTOM_COVER_STYLE_LIMITS.minSlots) {
+    throw httpError(400, `提示词模板至少需要包含 ${CUSTOM_COVER_STYLE_LIMITS.minSlots} 个 {{...}} 占位符。`)
+  }
+  const blocked = findBlocked(terms, template)
+  if (blocked) {
+    throw httpError(400, `提示词模板包含封面禁用词「${blocked}」，请修改后再试生成。`)
+  }
+  const guidance = normalizeMultiline(draft?.guidance)
+  if (guidance.length > CUSTOM_COVER_STYLE_LIMITS.maxGuidance) {
+    throw httpError(400, `填空指引不能超过 ${CUSTOM_COVER_STYLE_LIMITS.maxGuidance} 字。`)
+  }
+
+  const provider = settings?.coverProvider || 'ark'
+  const meta = providerMeta(provider)
+  const apiKey = settings?.[meta.keyField]
+  const model = settings?.[meta.modelField]
+  const format = providerFormats(provider)[0] || 'png'
+  if (!apiKey) throw httpError(400, meta.missingKeyError)
+
+  const usePortrait = Boolean(draft?.usePortrait)
+  const referenceImage = usePortrait ? (settings?.portraitUrl || null) : null
+  const title = (typeof testTitle === 'string' ? testTitle.trim().slice(0, 120) : '') || DEFAULT_TEST_TITLE
+  const markdown = (typeof testMarkdown === 'string' ? testMarkdown.trim().slice(0, 1200) : '') || `# ${title}\n\n${title}`
+
+  onStage?.('prompt')
+  const prompt = await coverPrompt(ctx, title, markdown, 'custom-preview', settings?.persona ?? {}, {
+    hasReference: Boolean(referenceImage),
+    customStyle: {
+      id: 'custom-preview',
+      name: typeof draft?.name === 'string' ? draft.name.trim() : '自定义风格',
+      template,
+      guidance,
+      usePortrait,
+    },
+  })
+
+  onStage?.('generating')
+  const rawImage = await generateCoverImage(provider, prompt, {
+    apiKey, model, resolution, format, referenceImage, subject: '样例封面',
+  }, fetchImpl)
+
+  onStage?.('saving')
+  const { cropCover } = await import('../dist/image-crop.mjs')
+  const cropped = cropCover(rawImage, format)
+  const saved = await saveDraftPreview(root, cropped, format)
+  return {
+    draftToken: saved.draftToken,
+    format: saved.format,
+    prompt,
+    provider,
+    model,
+  }
 }

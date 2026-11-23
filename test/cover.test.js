@@ -7,6 +7,7 @@ import { test } from 'node:test'
 import { deflateSync } from 'node:zlib'
 import { createArticle } from '../src/article.js'
 import { callModel, COVER_SKILL_DIR } from '../src/ai.js'
+import { buildCoverPromptRequest } from '../src/cover-prompt.js'
 import { coverDownloadName, generateArkCover, generateBailianCover, generateCoverImage, generateMinimaxCover, readCover, saveCover } from '../src/cover.js'
 import { BAILIAN_SIZES, COVER_PROVIDERS, INLINE_IMAGE_SIZES, MINIMAX_SIZES, modelsFor, providerFormats } from '../src/cover-options.js'
 import { COVER_STYLES, CUSTOM_COVER_STYLE_LIMITS, extractTemplateSlots, hasPortraitMarkers, isCustomStyleId, resolveCoverStyleName } from '../src/cover-styles.js'
@@ -742,4 +743,16 @@ test('callModel strictImages：不支持识图或运行时报图片错误时直�
   assert.equal(out, 'text-fallback')
   assert.equal(runtimeCalls, 2)
   assert.match(fallbackReason, /不支持图片输入/)
+})
+
+test('内置封面风格：7 套 buildCoverPromptRequest 保持 SKILL.md 与模板逐字不变', async () => {
+  const skill = await readFile(join(COVER_SKILL_DIR, 'SKILL.md'), 'utf8')
+  for (const style of COVER_STYLES) {
+    const templateName = style.id === 'classic' ? 'prompt_template.md' : `prompt_template_${style.id}.md`
+    const template = await readFile(join(COVER_SKILL_DIR, `references/${templateName}`), 'utf8')
+    const req = await buildCoverPromptRequest('测试标题', MD, style.id, {}, { hasReference: style.usePortrait })
+    assert.equal(req.style, style.id)
+    assert.ok(req.system.startsWith(`${skill}\n\n${template}\n\n`), `${style.id} 必须原样保留 SKILL.md 和模板`)
+    assert.ok(req.slots.length > 0)
+  }
 })
