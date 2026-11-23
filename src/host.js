@@ -47,6 +47,7 @@ import { normalizeStyleProfile } from './writing-style-shared.js'
 import { analyzeWritingStyle, applyWritingStyle, previewWritingStyle, readStyleState, renderHeadlineSkill, renderWriterSkill, restoreDefaultStyle } from './writing-style.js'
 
 const MAX_JSON = 4_000_000
+const MAX_ANALYZE_JSON = 10_000_000
 const MAX_PDF = 30_000_000
 const MAX_IMPORT = 10_000_000
 const { version: VERSION } = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'))
@@ -68,8 +69,8 @@ async function readBuffer(req, limit) {
   return Buffer.concat(chunks)
 }
 
-async function readJson(req) {
-  const raw = await readBuffer(req, MAX_JSON)
+async function readJson(req, limit = MAX_JSON) {
+  const raw = await readBuffer(req, limit)
   if (!raw.length) return {}
   try {
     return JSON.parse(raw.toString('utf8'))
@@ -143,8 +144,8 @@ function publicTestJob(job) {
   }
 }
 
-function findRunningTestJob(store) {
-  pruneCoverStyleTestJobs(store)
+function findRunningTestJob(store, { prune = true } = {}) {
+  if (prune) pruneCoverStyleTestJobs(store)
   const reg = testJobRegistry(store)
   for (const job of reg.jobs.values()) {
     if (job.status === 'running') return job
@@ -154,7 +155,7 @@ function findRunningTestJob(store) {
 
 function activeTestJobForSummary(store) {
   pruneCoverStyleTestJobs(store)
-  const running = findRunningTestJob(store)
+  const running = findRunningTestJob(store, { prune: false })
   if (running) return publicTestJob(running)
   const reg = testJobRegistry(store)
   const latest = reg.latestId ? reg.jobs.get(reg.latestId) : null
@@ -674,7 +675,7 @@ export async function route(deps, req, res) {
         if (!job) return json(res, 404, { error: '试生成任务不存在或已过期。' })
         return json(res, 200, publicTestJob(job))
       }
-      const running = findRunningTestJob(store)
+      const running = findRunningTestJob(store, { prune: false })
       const job = running ?? (reg.latestId ? reg.jobs.get(reg.latestId) : null)
       return json(res, 200, publicTestJob(job))
     }
@@ -791,7 +792,7 @@ export async function route(deps, req, res) {
     return json(res, 200, await insightsView(deps, url.searchParams.get('range')))
   }
 
-  const body = await readJson(req)
+  const body = await readJson(req, path === 'cover-styles/analyze' ? MAX_ANALYZE_JSON : MAX_JSON)
   switch (path) {
     case 'inline-diagrams/analyze': {
       const article = activeInlineArticle(await store.read(), body.id)
@@ -1061,9 +1062,9 @@ export async function route(deps, req, res) {
       return json(res, 200, result)
     }
     case 'cover-styles/test-generate': {
-      const running = findRunningTestJob(store)
-      if (running) {
-        return json(res, 409, { error: '当前已有样图正在试生成，请等待完成后再试。', activeJobId: running.jobId })
+      const runningBefore = findRunningTestJob(store)
+      if (runningBefore) {
+        return json(res, 409, { error: '当前已有样图正在试生成，请等待完成后再试。', activeJobId: runningBefore.jobId })
       }
       const resolution = body.resolution ?? '1K'
       if (!COVER_RESOLUTIONS.includes(resolution)) {
@@ -1076,6 +1077,10 @@ export async function route(deps, req, res) {
       if (extractTemplateSlots(template).length < CUSTOM_COVER_STYLE_LIMITS.minSlots) {
         return json(res, 400, { error: `提示词模板至少需要包含 ${CUSTOM_COVER_STYLE_LIMITS.minSlots} 个 {{...}} 占位符。` })
       }
+      const guidance = typeof body.draft?.guidance === 'string' ? body.draft.guidance.replace(/\r\n?/g, '\n').trim() : ''
+      if (guidance.length > CUSTOM_COVER_STYLE_LIMITS.maxGuidance) {
+        return json(res, 400, { error: `填空指引不能超过 ${CUSTOM_COVER_STYLE_LIMITS.maxGuidance} 字。` })
+      }
       const blocked = findBlocked(await loadCoverBlocklist(), template)
       if (blocked) {
         return json(res, 400, { error: `提示词模板包含封面禁用词「${blocked}」，请修改后再试生成。` })
@@ -1086,6 +1091,12 @@ export async function route(deps, req, res) {
       if (!meta) return json(res, 400, { error: '请选择有效的生图提供方。' })
       if (!settings[meta.keyField]) return json(res, 400, { error: meta.missingKeyError })
 
+      // 异步校验完成后同步复查单活锁，消除 TOCTOU 并发双生图竞态
+      const runningNow = findRunningTestJob(store)
+      if (runningNow) {
+        return json(res, 409, { error: '当前已有样图正在试生成，请等待完成后再试。', activeJobId: runningNow.jobId })
+      }
+
       const reg = testJobRegistry(store)
       const jobId = randomUUID()
       const job = { jobId, status: 'running', stage: 'prompt', createdAt: Date.now(), finishedAt: null, result: null, error: null, consumed: false }
@@ -1094,7 +1105,7 @@ export async function route(deps, req, res) {
 
       void (async () => {
         try {
-          const res = await previewCustomCoverStyle(ctx, store.root, settings, {
+          const preview = await previewCustomCoverStyle(ctx, store.root, settings, {
             draft: body.draft,
             testTitle: body.testTitle,
             testMarkdown: body.testMarkdown,
@@ -1102,16 +1113,16 @@ export async function route(deps, req, res) {
             onStage: stage => { job.stage = stage },
           }, deps.fetchImpl)
           job.result = {
-            draftToken: res.draftToken,
-            previewUrl: `wechat-studio/cover-styles/draft-preview?${new URLSearchParams({ token: res.draftToken })}`,
-            prompt: res.prompt,
-            format: res.format,
-            provider: res.provider,
-            model: res.model,
+            draftToken: preview.draftToken,
+            previewUrl: `wechat-studio/cover-styles/draft-preview?${new URLSearchParams({ token: preview.draftToken })}`,
+            prompt: preview.prompt,
+            format: preview.format,
+            provider: preview.provider,
+            model: preview.model,
           }
           job.status = 'succeeded'
         } catch (err) {
-          const isMinimaxTimeout = provider === 'minimax' && (err.code === 'MINIMAX_TIMEOUT' || err.name === 'TimeoutError')
+          const isMinimaxTimeout = provider === 'minimax' && (err.code === 'MINIMAX_TIMEOUT' || (job.stage === 'generating' && err.name === 'TimeoutError'))
           job.error = isMinimaxTimeout
             ? (err.code === 'MINIMAX_TIMEOUT' ? err.message : 'MiniMax 样例封面生成已等待 600 秒并断开，服务端仍可能完成并计费；请避免立即重复提交。')
             : (err.name === 'TimeoutError' ? '试生成样图超时，请重试。' : (err.message || '试生成样图失败。'))

@@ -323,3 +323,102 @@ test('文章正式封面生成：自定义风格按 usePortrait 透传肖像，�
   assert.equal(sel.status, 200)
   assert.equal(sel.json().current.cover.styleName, '博主出镜自定义')
 })
+
+test('修复回归：并发 TOCTOU 单活锁、多图 analyze 超 4MB、prompt 超时不误报 MiniMax 计费、20 条历史上限与 404/415 路由', async () => {
+  const png = makePng(94, 40)
+  let fetchCalls = 0
+  let releaseFetch
+  const fetchGate = new Promise(r => { releaseFetch = r })
+  const fetchImpl = async () => {
+    fetchCalls++
+    await fetchGate
+    return Response.json({ data: [{ b64_json: png.toString('base64') }] })
+  }
+  const { store, request } = await createHost({
+    fetchImpl,
+    llmReplies: [{ values: ['并发标题', '并发视觉'] }],
+  })
+  const draft = { name: '并发锁', template: '21:9 标题 {{主标题}}，视觉 {{视觉}}', guidance: '', usePortrait: false }
+
+  // 1. Promise.all 并发发起两次 test-generate：必须 1 次 200 + 1 次 409，只触发 1 次生图
+  const [r1, r2] = await Promise.all([
+    request('cover-styles/test-generate', { draft, testTitle: 'C1', resolution: '1K' }),
+    request('cover-styles/test-generate', { draft, testTitle: 'C2', resolution: '1K' }),
+  ])
+  const statuses = [r1.status, r2.status].sort((a, b) => a - b)
+  assert.deepEqual(statuses, [200, 409])
+  const okRes = r1.status === 200 ? r1 : r2
+  const conflictRes = r1.status === 409 ? r1 : r2
+  assert.equal(conflictRes.json().activeJobId, okRes.json().jobId)
+  releaseFetch()
+  const done = await waitTestJob(request, okRes.json().jobId)
+  assert.equal(done.status, 'succeeded')
+  assert.equal(fetchCalls, 1)
+
+  // 保存消费 previewDraftToken 后，activeTestJob 自动清空为 null
+  const saved = await request('cover-styles/save', {
+    name: '消费草稿测试',
+    description: '描',
+    usePortrait: false,
+    template: draft.template,
+    previewDraftToken: done.result.draftToken,
+  })
+  assert.equal(saved.status, 200)
+  assert.equal((await request('cover-styles')).json().activeTestJob, null)
+
+  // 2. 404 / 415 / delete 400 & 404 路由覆盖
+  assert.equal((await request('cover-styles/item?id=custom-notfound')).status, 404)
+  assert.equal((await request('cover-styles/preview?id=custom-notfound')).status, 404)
+  assert.equal((await request('cover-styles/draft-preview?token=00000000-0000-4000-8000-000000000000')).status, 404)
+  assert.equal((await request('cover-styles/delete', { id: 'classic' })).status, 400)
+  assert.equal((await request('cover-styles/delete', { id: 'custom-notfound' })).status, 404)
+  const fs = await import('node:fs/promises')
+  await fs.writeFile(join(store.root, 'cover-styles', saved.json().style.id, 'preview.png'), 'corrupt-text')
+  assert.equal((await request(`cover-styles/preview?id=${saved.json().style.id}`)).status, 415)
+
+  // 3. prompt 阶段 LLM TimeoutError 在 minimax 提供方下不得误报 600 秒计费警告
+  const mmPromptTimeout = await createHost({
+    provider: 'minimax',
+    key: 'sk-mm',
+    llmReplies: [new DOMException('prompt timeout', 'TimeoutError')],
+    fetchImpl: async () => { assert.fail('prompt 阶段超时不应调 MiniMax 生图接口') },
+  })
+  const ptStart = await mmPromptTimeout.request('cover-styles/test-generate', { draft, testTitle: 'PT', resolution: '1K' })
+  const ptEnd = await waitTestJob(mmPromptTimeout.request, ptStart.json().jobId)
+  assert.equal(ptEnd.status, 'failed')
+  assert.doesNotMatch(ptEnd.error, /600 秒|计费/)
+  assert.match(ptEnd.error, /超时/)
+
+  // 4. 超过 20 条已完成试生成任务时，最旧的任务被淘汰至 20 条
+  const capHost = await createHost({
+    fetchImpl: async () => Response.json({ data: [{ b64_json: png.toString('base64') }] }),
+    llmReplies: Array.from({ length: 22 }, (_, i) => ({ values: [`标题${i}`, `视觉${i}`] })),
+  })
+  const jobIds = []
+  for (let i = 0; i < 22; i++) {
+    const st = await capHost.request('cover-styles/test-generate', { draft, testTitle: `J${i}`, resolution: '1K' })
+    assert.equal(st.status, 200)
+    const id = st.json().jobId
+    jobIds.push(id)
+    await waitTestJob(capHost.request, id)
+  }
+  assert.equal((await capHost.request(`cover-styles/test-status?jobId=${jobIds[0]}`)).status, 404, '第 1 条最旧任务应已被淘汰')
+  assert.equal((await capHost.request(`cover-styles/test-status?jobId=${jobIds[1]}`)).status, 404, '第 2 条最旧任务应已被淘汰')
+  assert.equal((await capHost.request(`cover-styles/test-status?jobId=${jobIds[21]}`)).status, 200, '最新任务应保留')
+
+  // 5. 多张大图（合计 JSON > 4 MB 但单张解码 <= 2 MB）调用 POST cover-styles/analyze 不被 413 拦截
+  const bigPng = Buffer.concat([makePng(94, 40), Buffer.alloc(1_600_000, 0x00)])
+  const bigDataUrl = `data:image/png;base64,${bigPng.toString('base64')}`
+  const bigHost = await createHost({
+    llmReplies: [{
+      name: '大图分析测试',
+      description: '验证 3 张 1.6MB 图片 JSON 超过 4MB 时不被 413 拦截。',
+      usePortrait: false,
+      template: '21:9 大图测试 {{主标题}} 与 {{视觉主体}}',
+      guidance: '',
+    }],
+  })
+  const bigRes = await bigHost.request('cover-styles/analyze', { referenceImages: [bigDataUrl, bigDataUrl, bigDataUrl] })
+  assert.equal(bigRes.status, 200)
+  assert.equal(bigRes.json().draft.name, '大图分析测试')
+})
