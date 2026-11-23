@@ -9,6 +9,7 @@ import { createStandaloneCtx, resolveStandaloneLlmConfig } from './cli-llm.js'
 import { COVER_FORMATS, COVER_PROVIDERS, COVER_RESOLUTIONS, providerFormats, providerMeta } from './cover-options.js'
 import { buildCoverPromptRequest } from './cover-prompt.js'
 import { COVER_STYLES } from './cover-styles.js'
+import { listCoverStyles, resolveCoverStyle } from './custom-cover-styles.js'
 import { coverPrompt, generateCoverImage, readCover, saveCover } from './cover.js'
 import { generateDerivative, prepareDerivePrompt } from './derive.js'
 import { toPortableMarkdown } from './derive-markdown.js'
@@ -119,7 +120,7 @@ const SUB_HELP = {
   cover: `用法: wechat-studio cover <file.md|-> [options]
       wechat-studio cover --prompt-file <file|-> [options]
 选项:
-  --style <id>       封面风格（${COVER_STYLES.map(s => s.id).join(', ')}，默认 classic）
+  --style <id>       封面风格（内置：${COVER_STYLES.map(s => s.id).join(', ')}，以及工作区本地自定义风格 ID，默认 classic）
   --resolution <r>   分辨率（${COVER_RESOLUTIONS.join(', ')}，默认 2K）
   --format <fmt>     输出格式（${COVER_FORMATS.join(', ')}，默认 png）
   --provider <p>     生图提供方（${COVER_PROVIDERS.map(p => p.id).join(', ')}）
@@ -643,8 +644,11 @@ async function handleCover(argv, io, secrets) {
   assertPositionals(positionals, 1, usage)
   const file = positionals[0]
   if (!values['prompt-file'] && !file) throw new UsageError(usage)
-  if (!COVER_STYLES.some(item => item.id === values.style)) {
-    throw new UsageError(`不支持的封面风格：${values.style}（可选：${COVER_STYLES.map(s => s.id).join(', ')}）`)
+  const dataDir = resolveDataDir(values, io.env)
+  const resolvedStyle = await resolveCoverStyle(dataDir, values.style)
+  if (!resolvedStyle) {
+    const { styles } = await listCoverStyles(dataDir)
+    throw new UsageError(`不支持的封面风格：${values.style}（可选：${styles.map(s => s.id).join(', ')}）`)
   }
   if (!COVER_RESOLUTIONS.includes(values.resolution)) {
     throw new UsageError(`不支持的分辨率：${values.resolution}（可选：${COVER_RESOLUTIONS.join(', ')}）`)
@@ -652,7 +656,6 @@ async function handleCover(argv, io, secrets) {
   if (!COVER_FORMATS.includes(values.format)) {
     throw new UsageError(`不支持的图片格式：${values.format}（可选：${COVER_FORMATS.join(', ')}）`)
   }
-  const dataDir = resolveDataDir(values, io.env)
   const settings = await readSettings(dataDir)
   const provider = values.provider ?? settings.coverProvider ?? 'ark'
   if (!COVER_PROVIDERS.some(p => p.id === provider)) {
@@ -661,7 +664,8 @@ async function handleCover(argv, io, secrets) {
   if (!values['prompt-only'] && !providerFormats(provider).includes(values.format)) {
     throw new UsageError(`提供方 ${provider} 仅支持格式：${providerFormats(provider).join(', ')}`)
   }
-  const referenceImage = values.style === 'felt' ? null : settings.portraitUrl || null
+  const referenceImage = resolvedStyle.usePortrait ? (settings.portraitUrl || null) : null
+  const customStyle = resolvedStyle.source === 'custom' ? resolvedStyle : null
 
   let prompt
   if (values['prompt-file']) {
@@ -672,9 +676,13 @@ async function handleCover(argv, io, secrets) {
     const parsed = splitMarkdown(markdown)
     const title = parsed.title || (file === '-' ? '未命名文章' : basename(file, '.md'))
     if (values['prompt-only']) {
-      const req = await buildCoverPromptRequest(title, markdown, values.style, settings.persona, { hasReference: Boolean(referenceImage) })
+      const req = await buildCoverPromptRequest(title, markdown, resolvedStyle.id, settings.persona, {
+        hasReference: Boolean(referenceImage),
+        customStyle,
+      })
       return emitSuccess(io, values.json, {
         style: req.style,
+        styleName: resolvedStyle.name,
         title: req.title,
         promptOnly: true,
         slots: req.slots,
@@ -686,7 +694,10 @@ async function handleCover(argv, io, secrets) {
       }, `${req.system}\n\n---\n\n${req.user}`)
     }
     const ctx = resolveCtx(io, values, secrets)
-    prompt = await coverPrompt(ctx, title, markdown, values.style, settings.persona, { hasReference: Boolean(referenceImage) })
+    prompt = await coverPrompt(ctx, title, markdown, resolvedStyle.id, settings.persona, {
+      hasReference: Boolean(referenceImage),
+      customStyle,
+    })
   }
 
   const meta = providerMeta(provider)

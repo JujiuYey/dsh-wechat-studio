@@ -9,6 +9,7 @@ import { promisify } from 'node:util'
 import { PNG } from 'pngjs'
 import { callModel } from '../src/ai.js'
 import { runCli } from '../src/cli.js'
+import { saveCustomCoverStyle } from '../src/custom-cover-styles.js'
 import { createStandaloneCtx, resolveStandaloneLlmConfig } from '../src/cli-llm.js'
 import { Store } from '../src/store.js'
 
@@ -1258,6 +1259,77 @@ test('CLI MiniMax H3：settings 配置脱敏与 cover（环境变量、参考图
     const timeoutRes = JSON.parse(timeoutIo.read().out)
     assert.match(timeoutRes.error, /600 秒.*计费/)
     assert.doesNotMatch(timeoutRes.error, /请重试/)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('CLI cover 子命令：支持本地自定义封面风格、--prompt-only、usePortrait 透传与非法风格报错', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'ws-cli-custom-cover-'))
+  const mdPath = join(dir, 'post.md')
+  const png = makePngBuffer(94, 40)
+  try {
+    await writeFile(mdPath, '# CLI 自定义封面测试\n\n这是用来验证 CLI 自定义封面风格的正文内容。\n', 'utf8')
+    const noPortrait = (await saveCustomCoverStyle(dir, {
+      name: 'CLI纯静物',
+      description: '不带真人的静物封面。',
+      usePortrait: false,
+      template: '21:9 极简静物，标题 {{主标题}}，物件 {{核心物件}}',
+      guidance: '标题限 10 字',
+    })).style
+    const withPortrait = (await saveCustomCoverStyle(dir, {
+      name: 'CLI真人出镜',
+      description: '带真人出镜封面。',
+      usePortrait: true,
+      template: '21:9 杂志封面，标题 {{主标题}}，视觉 {{视觉}}，人物 [[SUBJECT]] 穿 [[OUTFIT]]',
+      guidance: '',
+    })).style
+
+    // 1. --prompt-only --json 使用自定义风格且不含内置 SKILL.md 文案
+    const poIo = makeIo()
+    assert.equal(await runCli(['cover', mdPath, '--style', noPortrait.id, '--prompt-only', '--data-dir', dir, '--json'], poIo), 0)
+    const poRes = JSON.parse(poIo.read().out)
+    assert.equal(poRes.ok, true)
+    assert.equal(poRes.style, noPortrait.id)
+    assert.deepEqual(poRes.slots, ['主标题', '核心物件'])
+    assert.doesNotMatch(poRes.system, /林月半子|七种风格|左字右人/)
+
+    // 2. 配置 portraitUrl 与火山方舟密钥，验证 usePortrait: false 不传图、true 传图
+    assert.equal(await runCli([
+      'settings', 'set',
+      '--cover-provider', 'ark',
+      '--ark-key', 'sk-ark-cli',
+      '--portrait-url', 'https://example.com/cli-me.png',
+      '--data-dir', dir,
+      '--json',
+    ], makeIo()), 0)
+
+    const arkBodies = []
+    const makeMockIo = () => makeIo({
+      env: { OPENAI_API_KEY: 'sk-llm', OPENAI_MODEL: 'gpt-test' },
+      fetchImpl: async (url, init) => {
+        if (String(url).includes('chat/completions')) {
+          return Response.json({ choices: [{ message: { content: JSON.stringify({ values: ['CLI标题', 'CLI元素'] }) } }] })
+        }
+        arkBodies.push(JSON.parse(init.body))
+        return Response.json({ data: [{ b64_json: png.toString('base64') }] })
+      },
+    })
+
+    const io1 = makeMockIo()
+    assert.equal(await runCli(['cover', mdPath, '--style', noPortrait.id, '--data-dir', dir, '--json'], io1), 0)
+    assert.equal(arkBodies[0].image, undefined, 'usePortrait: false 不应传 portraitUrl')
+
+    const io2 = makeMockIo()
+    assert.equal(await runCli(['cover', mdPath, '--style', withPortrait.id, '--data-dir', dir, '--json'], io2), 0)
+    assert.equal(arkBodies[1].image, 'https://example.com/cli-me.png', 'usePortrait: true 应传 portraitUrl')
+
+    // 3. 未知风格退出码 2 且错误提示列出内置和本地自定义风格 ID
+    const badIo = makeIo()
+    assert.equal(await runCli(['cover', mdPath, '--style', 'nonexistent', '--data-dir', dir, '--json'], badIo), 2)
+    const badRes = JSON.parse(badIo.read().out)
+    assert.match(badRes.error, /不支持的封面风格/)
+    assert.match(badRes.error, new RegExp(noPortrait.id))
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
