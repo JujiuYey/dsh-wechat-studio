@@ -6,10 +6,10 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 import { deflateSync } from 'node:zlib'
 import { createArticle } from '../src/article.js'
-import { COVER_SKILL_DIR } from '../src/ai.js'
+import { callModel, COVER_SKILL_DIR } from '../src/ai.js'
 import { coverDownloadName, generateArkCover, generateBailianCover, generateCoverImage, generateMinimaxCover, readCover, saveCover } from '../src/cover.js'
 import { BAILIAN_SIZES, COVER_PROVIDERS, INLINE_IMAGE_SIZES, MINIMAX_SIZES, modelsFor, providerFormats } from '../src/cover-options.js'
-import { COVER_STYLES } from '../src/cover-styles.js'
+import { COVER_STYLES, CUSTOM_COVER_STYLE_LIMITS, extractTemplateSlots, hasPortraitMarkers, isCustomStyleId, resolveCoverStyleName } from '../src/cover-styles.js'
 import { PNG } from 'pngjs'
 import { AUTHOR_SAMPLE_PORTRAIT, publicSettings, readSettings, updateSettings } from '../src/settings.js'
 import { Store } from '../src/store.js'
@@ -637,4 +637,109 @@ test('MiniMax 设置与封面路由：持久化脱敏、edits/generations 分流
   assert.equal(run.errors.length, 1)
   assert.match(run.errors[0], /600 秒.*计费/)
   assert.doesNotMatch(run.errors[0], /请重试/)
+})
+
+test('cover-styles.js：浏览器安全、内置元数据和共享纯函数', async () => {
+  const source = await readFile(new URL('../src/cover-styles.js', import.meta.url), 'utf8')
+  assert.ok(!/from\s+['"]node:/.test(source), 'cover-styles.js 必须保持浏览器安全')
+  assert.equal(COVER_STYLES.length, 7)
+  for (const item of COVER_STYLES) {
+    assert.equal(item.source, 'builtin')
+    assert.equal(item.usePortrait, item.id !== 'felt')
+  }
+  assert.deepEqual(CUSTOM_COVER_STYLE_LIMITS, {
+    maxStyles: 30,
+    maxReferenceImages: 3,
+    maxReferenceBytes: 2 * 1024 * 1024,
+    minSlots: 2,
+    maxName: 16,
+    maxDescription: 80,
+    maxRequirement: 1000,
+    maxTemplate: 8000,
+    maxGuidance: 4000,
+  })
+  assert.equal(isCustomStyleId('custom-a1b2c3d4'), true)
+  assert.equal(isCustomStyleId('classic'), false)
+  assert.equal(isCustomStyleId('../x'), false)
+  assert.equal(isCustomStyleId('custom-../bad'), false)
+  assert.equal(isCustomStyleId(null), false)
+  assert.deepEqual(extractTemplateSlots('A {{ 标题 }} B {{视觉元素}} C {{  }}'), ['标题', '视觉元素'])
+  assert.equal(hasPortraitMarkers('[[SUBJECT]] wearing [[OUTFIT]]'), true)
+  assert.equal(hasPortraitMarkers('左侧放[[人物]]，穿[[服装]]'), true)
+  assert.equal(hasPortraitMarkers('只有物件没有真人'), false)
+  const live = [{ id: 'custom-1111aaaa', name: '实时名称' }]
+  assert.equal(resolveCoverStyleName('custom-1111aaaa', live, '旧名称'), '实时名称')
+  assert.equal(resolveCoverStyleName('custom-deleted1', live, '已删风格名'), '已删风格名')
+  assert.equal(resolveCoverStyleName('kinetic', live, ''), '动感大字')
+  assert.equal(resolveCoverStyleName('custom-unknown1', live, ''), '封面')
+})
+
+test('coverDownloadName：支持自定义风格名覆盖、run.styleName 与旧记录回退', () => {
+  const customRun = { style: 'custom-abcd1234', styleName: '黑金杂志风', format: 'png', createdAt: '2026-11-23T10:00:00', images: [{ id: 'a' }] }
+  assert.equal(coverDownloadName({ title: '测试标题' }, customRun, 'a'), '测试标题-黑金杂志风-2026-11-23-100000-01.png')
+  assert.equal(coverDownloadName({ title: '测试标题' }, customRun, 'a', '实时新名字'), '测试标题-实时新名字-2026-11-23-100000-01.png')
+  const legacyBuiltin = { style: 'kinetic', format: 'png', createdAt: '2026-11-23T10:00:00', images: [{ id: 'a' }] }
+  assert.equal(coverDownloadName({ title: '旧记录' }, legacyBuiltin, 'a'), '旧记录-动感大字-2026-11-23-100000-01.png')
+  const legacyUnknown = { style: 'custom-gone9999', format: 'png', createdAt: '2026-11-23T10:00:00', images: [{ id: 'a' }] }
+  assert.equal(coverDownloadName({ title: '旧自定义' }, legacyUnknown, 'a'), '旧自定义-封面-2026-11-23-100000-01.png')
+})
+
+test('callModel strictImages：不支持识图或运行时报图片错误时直接抛 400 且不降级纯文本', async () => {
+  const img = `data:image/png;base64,${makePng(47, 20).toString('base64')}`
+
+  let textOnlyCalls = 0
+  const textOnlyCtx = {
+    get: name => ({
+      agentDefaultModel: { currentSelection: () => ({ provider: 'p', model: 'text-only' }) },
+      llm: {
+        listModels: async () => [{ id: 'text-only', inputModalities: ['text'] }],
+        prepareCall: async () => {
+          textOnlyCalls++
+          return { config: {}, async *stream() { yield { type: 'text-delta', text: 'fallback' }; yield { type: 'finish', reason: { kind: 'stop' } } } }
+        },
+      },
+    }[name] ?? null),
+  }
+  await assert.rejects(
+    callModel(textOnlyCtx, { system: 's', user: 'u', images: [img], task: 'test', strictImages: true }),
+    err => err.status === 400 && /不支持识图/.test(err.message),
+  )
+  assert.equal(textOnlyCalls, 0, 'strictImages 在 vision === false 时不应发起模型调用')
+
+  let runtimeCalls = 0
+  const runtimeUnsupportedCtx = {
+    get: name => ({
+      agentDefaultModel: { currentSelection: () => ({ provider: 'p', model: 'unknown-vision' }) },
+      llm: {
+        listModels: async () => [{ id: 'unknown-vision' }],
+        prepareCall: async () => {
+          runtimeCalls++
+          return {
+            config: {},
+            async *stream() {
+              if (runtimeCalls === 1) throw new Error('Provider error: model does not support images')
+              yield { type: 'text-delta', text: 'text-fallback' }
+              yield { type: 'finish', reason: { kind: 'stop' } }
+            },
+          }
+        },
+      },
+    }[name] ?? null),
+  }
+  await assert.rejects(
+    callModel(runtimeUnsupportedCtx, { system: 's', user: 'u', images: [img], task: 'test', strictImages: true }),
+    err => err.status === 400 && /不支持图片输入/.test(err.message),
+  )
+  assert.equal(runtimeCalls, 1, 'strictImages 在运行时报图片不支持时不应回退纯文本重试')
+
+  // 默认 strictImages: false 仍保持优雅降级
+  runtimeCalls = 0
+  let fallbackReason = ''
+  const out = await callModel(runtimeUnsupportedCtx, {
+    system: 's', user: 'u', images: [img], task: 'test',
+    onImageFallback: reason => { fallbackReason = reason },
+  })
+  assert.equal(out, 'text-fallback')
+  assert.equal(runtimeCalls, 2)
+  assert.match(fallbackReason, /不支持图片输入/)
 })

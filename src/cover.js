@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { BAILIAN_SIZES, MINIMAX_SIZES } from './cover-options.js'
-import { COVER_STYLES } from './cover-styles.js'
+import { resolveCoverStyleName } from './cover-styles.js'
 export { coverPrompt } from './cover-prompt.js'
 
 const MAX_IMAGE = 24 * 1024 * 1024
@@ -238,14 +238,14 @@ export function readCover(root, id, format = 'png') {
   return readFile(join(root, 'covers', `${id}.${format}`))
 }
 
-export function coverDownloadName(article, run, imageId) {
+export function coverDownloadName(article, run, imageId, styleNameOverride = '') {
   const clean = value => String(value ?? '')
     .replace(/[<>:"/\\|?*\u0000-\u001f]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
     .replace(/^[. ]+|[. ]+$/g, '')
   const title = clean(article.title).slice(0, 48) || '未命名文章'
-  const style = clean(COVER_STYLES.find(item => item.id === run.style)?.name) || '封面'
+  const style = clean(resolveCoverStyleName(run.style, null, styleNameOverride || run.styleName)) || '封面'
   const createdAt = new Date(run.createdAt)
   const date = Number.isNaN(createdAt.getTime()) ? '' : [
     [createdAt.getFullYear(), String(createdAt.getMonth() + 1).padStart(2, '0'), String(createdAt.getDate()).padStart(2, '0')].join('-'),

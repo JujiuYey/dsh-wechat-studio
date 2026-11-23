@@ -181,7 +181,7 @@ async function buildUserContent(ctx, user, images) {
  * @param {{system: string, user: string, images?: Array<string | {id: string, dataUrl: string}>, task: string, maxTokens?: number, signal?: AbortSignal, onText?: (delta: string) => void, onImageFallback?: (reason: string) => void}} request - 请求。
  * @returns {Promise<string>} 完整文本。
  */
-export async function callModel(ctx, { system, user, images = [], task, maxTokens = 8000, signal, onText, onImageFallback }) {
+export async function callModel(ctx, { system, user, images = [], strictImages = false, task, maxTokens = 8000, signal, onText, onImageFallback }) {
   const info = modelInfo(ctx)
   if (!info) throw new Error('当前没有可用模型，请先在 DeepSeek Harness 里配置好模型')
   const llm = ctx.get('llm')
@@ -216,6 +216,12 @@ export async function callModel(ctx, { system, user, images = [], task, maxToken
     if (shouldSendImages) {
       const vision = await modelVisionSupport(ctx)
       if (vision === false) {
+        if (strictImages) {
+          throw Object.assign(
+            new Error('当前所选模型不支持识图，请先切换到支持视觉的多模态模型，或移除参考图后仅用文字诉求创建。'),
+            { status: 400, code: 'VISION_UNSUPPORTED' },
+          )
+        }
         shouldSendImages = false
         onImageFallback?.('当前所选模型未声明支持识图，已自动降级为纯文字设计（如需模仿参考图风格，请切换支持视觉的多模态模型）。')
       }
@@ -225,6 +231,12 @@ export async function callModel(ctx, { system, user, images = [], task, maxToken
       text = await runOnce(shouldSendImages)
     } catch (err) {
       if (shouldSendImages && isImageUnsupportedError(err)) {
+        if (strictImages) {
+          throw Object.assign(
+            new Error('当前模型暂不支持图片输入，无法分析参考图；请切换到支持视觉的多模态模型，或移除参考图后仅用文字诉求创建。'),
+            { status: 400, code: 'VISION_UNSUPPORTED', cause: err },
+          )
+        }
         onImageFallback?.('当前模型暂不支持图片输入，已自动忽略参考图并按文字继续生成（切换支持识图的模型即可参考配图风格）。')
         text = await runOnce(false)
       } else {
