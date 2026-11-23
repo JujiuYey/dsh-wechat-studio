@@ -13,17 +13,34 @@ export const insertFormats = [
     ['bash', '终端 · bash'], ['text', '终端 · text'],
     ['prompt', '长提示词 · 黑标签'], ['promptbox', '长提示词 · 虚线框'],
   ] },
-  { label: '图片与分隔', items: [['image', '图片与图注'], ['long', '长图卡'], ['rule', '分隔线']] },
+  { label: '图片与分隔', items: [['image', '图片与图注'], ['long', '长图卡'], ['gallery', '横滑图集'], ['rule', '分隔线']] },
 ]
 
+function normalizeImageUrl(raw) {
+  let url
+  try { url = new URL(String(raw ?? '').trim()) } catch { throw new Error('请输入有效的图片地址。') }
+  if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password) throw new Error('请输入有效的 HTTP 或 HTTPS 图片地址。')
+  return url.href.replaceAll(')', '%29').replaceAll('>', '%3E')
+}
+
 export function cardMarkdown(id, title, value) {
+  if (id === 'gallery') {
+    const rawItems = Array.isArray(value)
+      ? value
+      : String(value ?? '').split(/\r?\n/).map(line => line.trim()).filter(Boolean).map(src => ({ src, caption: '' }))
+    if (rawItems.length < 2) throw new Error('横滑图集至少需要 2 张图片。')
+    const lines = rawItems.map(item => {
+      const cap = String(item?.caption ?? '').trim().replace(/[\r\n\[\]]/g, ' ')
+      return '![' + cap + '](<' + normalizeImageUrl(item?.src) + '>)'
+    })
+    const label = String(title ?? '').replace(/[\r\n]+/g, ' ').trim()
+    return (label ? '<[' + label + ']' : '<') + '\n' + lines.join(',\n') + '\n>'
+  }
   const label = title.trim().replace(/[\r\n\[\]]/g, ' ')
   const content = value.trim()
   if (id === 'image' || id === 'long') {
-    let url
-    try { url = new URL(content) } catch { throw new Error('请输入有效的图片地址。') }
-    if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password) throw new Error('请输入有效的 HTTP 或 HTTPS 图片地址。')
-    return '![' + label + '](<' + url.href.replaceAll(')', '%29').replaceAll('>', '%3E') + '>' + (id === 'long' ? ' "long"' : '') + ')'
+    const safeUrl = normalizeImageUrl(content)
+    return '![' + label + '](<' + safeUrl + '>' + (id === 'long' ? ' "long"' : '') + ')'
   }
   if (!content) throw new Error('请填写提示词内容。')
   const fence = /^\s*`{3}/m.test(content) ? '~~~' : '```'
@@ -54,6 +71,11 @@ export function formatSelection(text, start, end, id, card) {
     body = '![' + caption + '](<' + url + '>' + (id === 'long' ? ' "long"' : '') + ')'
     from = isUrl ? 2 : caption.length + 5
     to = from + (isUrl ? caption.length : url.length)
+  } else if (id === 'gallery') {
+    const first = '![图1](<图片地址1>)'
+    body = '<\n' + first + ',\n![图2](<图片地址2>)\n>'
+    from = 8
+    to = 8 + '图片地址1'.length
   } else if (id === 'rule') {
     body = '---'
     from = to = body.length

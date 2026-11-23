@@ -1,4 +1,5 @@
 import { blockKind, parseMarkdownImage, plainOf, splitMarkdown } from '../src/article.js'
+import { DEFAULT_GALLERY_LABEL, galleryColors, parseGalleryBlock } from '../src/gallery.js'
 import magentaPreview from './assets/cover-styles/magenta.webp'
 import { COVER_PROVIDERS, modelsFor, providerFormats, providerMeta, COVER_RESOLUTIONS, MAX_COVER_COUNT } from '../src/cover-options.js'
 import classicPreview from './assets/cover-styles/classic.webp'
@@ -93,7 +94,46 @@ function PaperImage({ src, caption, long }) {
   </div>
 }
 
-function BlockBody({ block, sectionNumber, articleId, layoutPreferences }) {
+function PaperGallerySlide({ item, index, total }) {
+  const [failed, setFailed] = React.useState(false)
+  const caption = item.caption.trim()
+  const description = /^(image|img|图片)$/i.test(caption) ? '' : caption
+  let usable = false
+  try {
+    const url = new URL(item.src)
+    usable = ['https:', 'http:'].includes(url.protocol) && !url.username && !url.password
+  } catch {
+    // Unpreviewable URL falls back to placeholder card.
+  }
+  return <div className={`ws-paper-gallery-item${total === 1 ? ' is-single' : ''}`}>
+    {usable && !failed ? (
+      <img src={item.src} alt={description || `图集第 ${index + 1} 张`} loading="lazy" decoding="async"
+        referrerPolicy="no-referrer" onError={() => setFailed(true)} />
+    ) : (
+      <div className="ws-media ws-paper-gallery-fallback">
+        <span className="ws-tag">图集</span> {description || (failed ? '图片加载失败' : '图片地址不可预览')}
+      </div>
+    )}
+    {description ? <span className="ws-paper-gallery-caption">{description}</span> : null}
+  </div>
+}
+
+function PaperGallery({ gallery, layoutStyle, palette }) {
+  const { label, items } = gallery
+  const { badgeBg, badgeText, countColor } = galleryColors(layoutStyle, palette)
+  return <div className={`ws-paper-gallery${layoutStyle === 'dark' ? ' is-dark' : ''}`}
+    style={{ '--gallery-badge-bg': badgeBg, '--gallery-badge-text': badgeText, '--gallery-count': countColor }}>
+    <div className="ws-paper-gallery-head">
+      <span className={`ws-paper-gallery-badge${layoutStyle === 'zen' ? ' is-zen' : ''}`}>{label || DEFAULT_GALLERY_LABEL}</span>
+      <span className="ws-paper-gallery-hint">{items.length} 张{items.length > 1 ? ' · 左右滑动 →' : ''}</span>
+    </div>
+    <div className="ws-paper-gallery-track">
+      {items.map((item, index) => <PaperGallerySlide key={`${item.src}-${index}`} item={item} index={index} total={items.length} />)}
+    </div>
+  </div>
+}
+
+function BlockBody({ block, sectionNumber, articleId, layoutPreferences, palette }) {
   const { kind, text } = block
   if (kind === 'code' && isSvgCardText(text)) return <SvgCardBlock articleId={articleId} block={block} layoutPreferences={layoutPreferences} />
   if (kind === 'heading') {
@@ -134,6 +174,8 @@ function BlockBody({ block, sectionNumber, articleId, layoutPreferences }) {
   }
   if (kind === 'list') return <div className="ws-list">{text.split('\n').map((line, i) => <div key={i}>{inline(line)}</div>)}</div>
   if (kind === 'media') {
+    const gallery = parseGalleryBlock(text)
+    if (gallery) return <PaperGallery gallery={gallery} layoutStyle={layoutPreferences?.style} palette={palette} />
     const image = parseMarkdownImage(text)
     if (image) return <PaperImage key={image.src} src={image.src} caption={image.caption} long={image.title.toLowerCase() === 'long'} />
     return <div className="ws-media">{text}</div>
@@ -353,6 +395,177 @@ function CardInsert({ card, onInsert, onClose, onUpload }) {
   </dialog>
 }
 
+function GalleryInsert({ card, onInsert, onClose, onUpload }) {
+  const ref = React.useRef(null)
+  const fileInput = React.useRef(null)
+  const objectUrls = React.useRef(new Set())
+  const seq = React.useRef(0)
+  const heading = React.useId()
+  const existingGallery = parseGalleryBlock(card.selection)
+  const [label, setLabel] = React.useState(existingGallery?.label ?? '')
+  const [items, setItems] = React.useState(() => {
+    if (existingGallery) return existingGallery.items.map(item => ({ key: ++seq.current, file: null, previewUrl: '', src: item.src, caption: item.caption }))
+    const urls = String(card.selection ?? '').split(/\r?\n/).map(line => line.trim()).filter(line => /^https?:\/\/\S+$/i.test(line))
+    return urls.map(src => ({ key: ++seq.current, file: null, previewUrl: '', src, caption: '' }))
+  })
+  const [urlInput, setUrlInput] = React.useState('')
+  const [uploading, setUploading] = React.useState(null)
+  const [error, setError] = React.useState('')
+  React.useEffect(() => {
+    const dialog = ref.current
+    dialog.showModal()
+    return () => { if (dialog.open) dialog.close() }
+  }, [])
+  React.useEffect(() => () => {
+    for (const url of objectUrls.current) URL.revokeObjectURL(url)
+    objectUrls.current.clear()
+  }, [])
+  const close = () => { if (!uploading) onClose() }
+  const parseUrlLines = raw => {
+    const lines = String(raw ?? '').split(/\r?\n/).map(line => line.trim()).filter(Boolean)
+    const added = []
+    for (const line of lines) {
+      let parsed
+      try { parsed = new URL(line) } catch { throw new Error(`图片地址无效：${line}`) }
+      if (!['https:', 'http:'].includes(parsed.protocol) || parsed.username || parsed.password) {
+        throw new Error(`请输入有效的 HTTP 或 HTTPS 图片地址：${line}`)
+      }
+      added.push({ key: ++seq.current, file: null, previewUrl: '', src: parsed.href, caption: '' })
+    }
+    return added
+  }
+  const chooseFiles = fileList => {
+    const files = [...(fileList ?? [])]
+    if (!files.length) return
+    const next = []
+    for (const file of files) {
+      if (file.size > 10 * 1024 * 1024) { setError(`「${file.name}」超过 10 MB，请压缩后再选。`); return }
+      const previewUrl = URL.createObjectURL(file)
+      objectUrls.current.add(previewUrl)
+      next.push({ key: ++seq.current, file, previewUrl, src: '', caption: '' })
+    }
+    setItems(prev => [...prev, ...next])
+    setError('')
+  }
+  const addUrls = () => {
+    if (!urlInput.trim()) return
+    try {
+      const added = parseUrlLines(urlInput)
+      setItems(prev => [...prev, ...added])
+      setUrlInput('')
+      setError('')
+    } catch (err) {
+      setError(err.message)
+    }
+  }
+  const moveItem = (index, delta) => {
+    setItems(prev => {
+      const target = index + delta
+      if (target < 0 || target >= prev.length) return prev
+      const copy = [...prev]
+      const [moved] = copy.splice(index, 1)
+      copy.splice(target, 0, moved)
+      return copy
+    })
+  }
+  const removeItem = index => {
+    setItems(prev => {
+      const target = prev[index]
+      if (target?.previewUrl) {
+        URL.revokeObjectURL(target.previewUrl)
+        objectUrls.current.delete(target.previewUrl)
+      }
+      return prev.filter((_, i) => i !== index)
+    })
+  }
+  const updateCaption = (index, caption) => {
+    setItems(prev => prev.map((item, i) => i === index ? { ...item, caption } : item))
+  }
+  const submit = async event => {
+    event.preventDefault()
+    if (uploading) return
+    setError('')
+    let working = items
+    try {
+      if (urlInput.trim()) {
+        const added = parseUrlLines(urlInput)
+        working = [...working, ...added]
+        setItems(working)
+        setUrlInput('')
+      }
+      if (working.length < 2) { setError('横滑图集至少需要 2 张图片。'); return }
+      const pending = working.filter(item => item.file && !item.src)
+      let done = 0
+      const resolved = []
+      for (const item of working) {
+        if (item.file && !item.src) {
+          done += 1
+          setUploading({ current: done, total: pending.length })
+          const uploadedUrl = await onUpload(item.file)
+          const updated = { ...item, src: uploadedUrl, file: null }
+          resolved.push(updated)
+          setItems(prev => prev.map(entry => entry.key === item.key ? updated : entry))
+        } else {
+          resolved.push(item)
+        }
+      }
+      onInsert(cardMarkdown('gallery', label, resolved))
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setUploading(null)
+    }
+  }
+  return <dialog ref={ref} className="ws-dialog ws-card-insert ws-gallery-insert" aria-labelledby={heading}
+    onCancel={e => { e.preventDefault(); close() }} onClick={e => { if (e.target === e.currentTarget) close() }}>
+    <form onSubmit={submit}>
+      <div className="ws-dialog-head"><h2 id={heading} className="ws-dialog-title">{existingGallery ? '编辑横滑图集' : '插入横滑图集'}</h2>
+        <button type="button" className="ws-icon-btn" aria-label="关闭" disabled={Boolean(uploading)} onClick={close}><Icon name="close" /></button>
+      </div>
+      <label>标签文字（选填）
+        <input value={label} onChange={e => setLabel(e.target.value)} disabled={Boolean(uploading)} placeholder={DEFAULT_GALLERY_LABEL} />
+      </label>
+      <div className="ws-local-image">
+        <div className="ws-local-image-actions">
+          <button type="button" className="ws-btn" disabled={Boolean(uploading)} onClick={() => fileInput.current?.click()}>
+            <Icon name="upload" />{items.length ? '继续添加本地图片' : '选择多张本地图片'}
+          </button>
+          <span className="ws-muted ws-small">支持多选 PNG、JPEG、GIF 或 WebP（单张不超过 10 MB），将按顺序生成左右滑动图集。</span>
+        </div>
+        <input ref={fileInput} type="file" multiple accept="image/png,image/jpeg,image/gif,image/webp,.png,.jpg,.jpeg,.gif,.webp" hidden onChange={event => {
+          chooseFiles(event.target.files)
+          event.target.value = ''
+        }} />
+      </div>
+      <div className="ws-gallery-url-row">
+        <label>或添加图片地址（可多行粘贴）
+          <textarea value={urlInput} onChange={e => setUrlInput(e.target.value)} rows={2} disabled={Boolean(uploading)} placeholder={'https://…\nhttps://…'} />
+        </label>
+        <button type="button" className="ws-btn" disabled={Boolean(uploading) || !urlInput.trim()} onClick={addUrls}>添加链接</button>
+      </div>
+      {items.length ? <div className="ws-gallery-list" aria-label="已选图片">
+        {items.map((item, index) => <div key={item.key} className="ws-gallery-row">
+          <span className="ws-gallery-index">{index + 1}/{items.length}</span>
+          <img className="ws-gallery-thumb" src={item.previewUrl || item.src} alt={`第 ${index + 1} 张预览`} referrerPolicy="no-referrer" />
+          <input value={item.caption} onChange={e => updateCaption(index, e.target.value)} maxLength={120} disabled={Boolean(uploading)} placeholder="图注（选填）" />
+          <div className="ws-gallery-row-actions">
+            <button type="button" className="ws-icon-btn" aria-label="上移" disabled={Boolean(uploading) || index === 0} onClick={() => moveItem(index, -1)}>↑</button>
+            <button type="button" className="ws-icon-btn" aria-label="下移" disabled={Boolean(uploading) || index === items.length - 1} onClick={() => moveItem(index, 1)}>↓</button>
+            <button type="button" className="ws-icon-btn" aria-label="移除" disabled={Boolean(uploading)} onClick={() => removeItem(index)}><Icon name="close" /></button>
+          </div>
+        </div>)}
+      </div> : <p className="ws-muted ws-small">还没有图片，请至少选择或添加 2 张图片。</p>}
+      {error ? <p className="ws-warn" role="alert">{error}</p> : null}
+      <div className="ws-dialog-foot">
+        <button type="button" className="ws-btn" disabled={Boolean(uploading)} onClick={close}>取消</button>
+        <button type="submit" className="ws-btn is-primary" disabled={Boolean(uploading)}>
+          {uploading ? `正在上传第 ${uploading.current}/${uploading.total} 张…` : `插入横滑图集${items.length ? `（${items.length} 张）` : ''}`}
+        </button>
+      </div>
+    </form>
+  </dialog>
+}
+
 function Editor({ articleId, block, number, sectionNumber, busy, nextId, onDone }) {
   const [draft, setDraft] = React.useState(() => draftsFor(articleId).get(block.id) ?? { text: block.text, original: block.text })
   const storageFailed = useStudio(s => s.draftStorageFailed)
@@ -409,9 +622,13 @@ function Editor({ articleId, block, number, sectionNumber, busy, nextId, onDone 
     const el = ref.current
     if (!el) return
     const { selectionStart: start, selectionEnd: end } = el
-    if (['image', 'long', 'prompt', 'promptbox'].includes(id)) {
+    if (['image', 'long', 'gallery', 'prompt', 'promptbox'].includes(id)) {
       if (menu.current) menu.current.open = false
-      setCard({ id, start, end, selection: draft.text.slice(start, end) })
+      if (id === 'gallery' && start === end && parseGalleryBlock(draft.text)) {
+        setCard({ id, start: 0, end: draft.text.length, selection: draft.text })
+      } else {
+        setCard({ id, start, end, selection: draft.text.slice(start, end) })
+      }
       return
     }
     applyFormat(formatSelection(draft.text, start, end, id))
@@ -499,7 +716,14 @@ function Editor({ articleId, block, number, sectionNumber, busy, nextId, onDone 
           <button type="button" className="ws-btn is-primary" disabled={saving || busy || !changed || conflict} onClick={() => void save(empty)}>{empty ? '删除段落' : '保存'}</button>
         </div>
       </div>
-      {card ? <CardInsert card={card} onClose={() => { setCard(null); focusRange(card.start, card.end) }}
+      {card?.id === 'gallery' ? <GalleryInsert card={card} onClose={() => { setCard(null); focusRange(card.start, card.end) }}
+        onUpload={file => uploadImage(file, articleId)}
+        onInsert={markdown => {
+          const next = formatSelection(draft.text, card.start, card.end, card.id, markdown)
+          if (next.text.length > 20000) throw new Error('插入后会超过这一段的 20000 字符上限。')
+          setCard(null)
+          applyFormat(next)
+        }} /> : card ? <CardInsert card={card} onClose={() => { setCard(null); focusRange(card.start, card.end) }}
         onUpload={file => uploadImage(file, articleId)}
         onInsert={markdown => {
           const next = formatSelection(draft.text, card.start, card.end, card.id, markdown)
@@ -660,7 +884,7 @@ function Paper({ article, reviewTarget }) {
                 : isSvgCardText(block.text) ? <div className="ws-block ws-svg-block">
                   <BlockBody block={block} sectionNumber={headingNumber} articleId={article.id} layoutPreferences={article.effectiveLayoutPreferences} />
                 </div> : <button type="button" className="ws-block" disabled={Boolean(job || pending)} title="点一下直接改这一段" onClick={() => openParagraph(article.id, block.id)}>
-                  <BlockBody block={block} sectionNumber={headingNumber} />
+                  <BlockBody block={block} sectionNumber={headingNumber} layoutPreferences={article.effectiveLayoutPreferences} palette={article.xhsPalette} />
                   {draftsFor(article.id).has(block.id) ? <span className="ws-unsaved">有未保存的修改</span> : null}
                 </button>}
             </div>

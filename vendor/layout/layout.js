@@ -1,8 +1,9 @@
 // 林月半子 · Markdown → 公众号排版。由 layout.py 逐行移植，输出与原脚本逐字节一致。
 // 产出：自带风格、配色切换和复制按钮的完整 HTML 页面，以及自查报告。
-import { esc, fixed, floatStr, round, pad, chars, len, slice, dumps, strip, rstrip, lstrip, PyError, ix, max, min, F, I, sum, int, float, splitN, splitWs, splitlines, expandtabs, get } from './py.js'
+import { esc, escQ, fixed, floatStr, round, pad, chars, len, slice, dumps, strip, rstrip, lstrip, PyError, ix, max, min, F, I, sum, int, float, splitN, splitWs, splitlines, expandtabs, get } from './py.js'
 import { re } from './pyre.js'
 import * as B from './banner.js'
+import { DEFAULT_GALLERY_LABEL, galleryColors, isGalleryOpening, parseGalleryBlock } from '../../src/gallery.js'
 
 const theme = (name, main, soft, tint, line, mark) => ({ name, main, soft, tint, line, mark })
 // 15 套配色：main 主色 / soft 浅底 / tint 色块 / line 线条 / mark 荧光笔
@@ -301,6 +302,30 @@ function image(src, alt, T) {
   }
   const cap = alt && !isPlainAlt(alt) ? caption(esc(alt), T, 8, 0) : ''
   return `<section style="margin:24px 0;text-align:center;"><img src="${src}" style="display:inline-block;width:100%;max-width:100%;vertical-align:top;${fr}"/>${cap}</section>`
+}
+
+/** 横滑图集，含标签、总张数、滑动提示和图注。 */
+function gallery({ label, items }, T) {
+  const total = items.length
+  const slideW = total === 1 ? '100%' : '86%'
+  const imgR = { mag: '0', min: '0', neo: '8px', bold: '10px' }[T.st] ?? '4px'
+  const { badgeBg, badgeText, countColor } = galleryColors(T.st, T)
+  const badgeFont = T.st === 'zen' ? `font-family:${SERIF_CN};` : ''
+  const head = `<section style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 10px;">`
+    + `<span style="display:inline-block;overflow-wrap:anywhere;background:${badgeBg};color:${badgeText};font-size:11px;font-weight:800;letter-spacing:1.5px;padding:4px 10px;border-radius:3px;line-height:1.2;${badgeFont}">${esc(label || DEFAULT_GALLERY_LABEL)}</span>`
+    + `<span style="flex-shrink:0;font-size:12px;color:${countColor};letter-spacing:0.5px;">${total} 张${total > 1 ? ' · 左右滑动 →' : ''}</span></section>`
+  const slides = items.map((item, idx) => {
+    const last = idx === total - 1
+    const mr = last ? '0' : '10px'
+    const description = item.caption.trim()
+    const capHtml = description && !isPlainAlt(description)
+      ? `<p style="margin:6px 0 0;font-size:13px;line-height:1.5;text-align:left;overflow-wrap:anywhere;color:${GRAY};">${esc(description)}</p>`
+      : ''
+    return `<section style="display:inline-block;vertical-align:top;width:${slideW};margin-right:${mr};white-space:normal;box-sizing:border-box;scroll-snap-align:${last ? 'end' : 'start'};scroll-snap-stop:always;">`
+      + `<img src="${escQ(item.src)}" style="display:block;width:100%;height:auto;border-radius:${imgR};"/>`
+      + `${capHtml}</section>`
+  }).join('')
+  return `<section style="margin:26px 0;">${head}<section style="overflow-x:auto;white-space:nowrap;font-size:0;-webkit-overflow-scrolling:touch;scroll-snap-type:x mandatory;padding-bottom:4px;">${slides}</section></section>`
 }
 
 /** 图注：灰色小字。跟在图片或视频下面的一行短说明 */
@@ -758,7 +783,9 @@ const fixEmpty = h => re('<span style="([^"]*)"></span>').sub(m => decoSvg(m[1])
 export function plainMd(md) {
   const out = []
   let fence = false, lang = '', buf = []
-  for (const ln of md.split('\n')) {
+  const lines = md.split('\n')
+  for (let i = 0; i < lines.length; i++) {
+    const ln = lines[i]
     let s = strip(ln)
     const m = re(String.raw`^(` + '```' + String.raw`+|~~~+)\s*([\w-]*)`).match(s)
     if (m && !fence) { fence = true; lang = m[2].toLowerCase(); buf = []; continue }
@@ -768,6 +795,19 @@ export function plainMd(md) {
       continue
     }
     if (fence) { buf.push(ln); continue }
+    if (s.startsWith('<')) {
+      if (parseGalleryBlock(s)) continue
+      if (isGalleryOpening(s)) {
+        const gbuf = [ln]
+        let j = i + 1
+        while (j < lines.length && strip(lines[j])) {
+          gbuf.push(lines[j])
+          if (strip(lines[j]).endsWith('>')) { j++; break }
+          j++
+        }
+        if (parseGalleryBlock(gbuf.join('\n'))) { i = j - 1; continue }
+      }
+    }
     if (re(String.raw`^!\[|^\[[^\]]*\.(mp4|mov|gif)\]$|^\[(截图|可补|可选|视频|GIF)`).match(s) || s.startsWith('^')) continue
     s = re(String.raw`\[!(\w+)\]\s*`).sub('', s)
     s = re(String.raw`\*\*|==|\+\+|~~`).sub('', s)
@@ -1156,7 +1196,7 @@ function cleanMd(md) {
   let fence = false
   for (const ln of md.split('\n')) {
     if (strip(ln).startsWith('```')) { fence = !fence; out.push(ln); continue }
-    if (fence) { out.push(ln); continue }
+    if (fence || (strip(ln).startsWith('<[') && isGalleryOpening(strip(ln)))) { out.push(ln); continue }
     out.push(re('(`[^`]*`)').split(ln).map((seg, k) => (k % 2 ? seg : ESC_RE.sub(m => m[1], seg))).join(''))
   }
   return out.join('\n')
@@ -1292,6 +1332,21 @@ function render(md, T, meta, stat = null) {
     }
     const mv = VIDEO_RE.match(s)
     if (mv) { flush(); bump(stat, '视频占位'); emit(videoSlot(mv[1], T), true); i++; continue }
+    if (s.startsWith('<')) {
+      let block = parseGalleryBlock(s), nextI = i + 1
+      if (!block && isGalleryOpening(s)) {
+        const buf = [ln]
+        let j = i + 1
+        while (j < lines.length && strip(lines[j])) {
+          buf.push(lines[j])
+          if (strip(lines[j]).endsWith('>')) { j++; break }
+          j++
+        }
+        const parsed = parseGalleryBlock(buf.join('\n'))
+        if (parsed) { block = parsed; nextI = j }
+      }
+      if (block) { flush(); bump(stat, '滑动卡'); emit(gallery(block, T), true); i = nextI; continue }
+    }
     const mi = re(String.raw`^!\[${IMAGE_ALT}\]\(<?([^)\s>]+)>?(?:\s+"([^"]*)")?\)$`).match(s)
     if (mi) {
       flush()

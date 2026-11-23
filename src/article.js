@@ -1,3 +1,5 @@
+import { parseGalleryBlock } from './gallery.js'
+
 // 文章模型：Markdown 按段切成块，所有修改都落到某一块上，改一段不会碰到别的段。
 let counter = 0
 
@@ -57,11 +59,15 @@ export function parseMarkdownImage(text) {
   return { caption: match[1].replace(/\\([\\\[\]])/g, '$1'), src: match[2], title: match[3] ?? '' }
 }
 
+export function parseMarkdownGallery(text) {
+  return parseGalleryBlock(text)?.items ?? null
+}
+
 export function blockKind(text) {
   if (/^\s*(```|~~~)/.test(text)) return 'code'
   if (/^#{2,6}\s/.test(text)) return 'heading'
   if (/^>\s?/.test(text)) return 'quote'
-  if (parseMarkdownImage(text) || /^\[[^\]]+\.(mp4|mov)\]\s*$/i.test(text)) return 'media'
+  if (parseMarkdownImage(text) || parseMarkdownGallery(text) || /^\[[^\]]+\.(mp4|mov)\]\s*$/i.test(text)) return 'media'
   if (/^\|.*\|\s*$/m.test(text) && /^\|?\s*:?-{2,}/m.test(text)) return 'table'
   if (/^\s*([-*+]|\d+[.)])\s/.test(text)) return 'list'
   if (/^(-{3,}|\*{3,})\s*$/.test(text)) return 'rule'
@@ -70,6 +76,7 @@ export function blockKind(text) {
 
 /** 去掉 Markdown 记号后的纯文字，用来和朱雀报告对段落。 */
 export function plainOf(text) {
+  if (parseMarkdownGallery(text)) return ''
   return String(text)
     .replace(/!\[(?:\\.|[^\]\\])*\]\([^)]*\)/g, '')
     .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')

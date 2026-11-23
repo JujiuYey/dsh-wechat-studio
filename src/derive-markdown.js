@@ -1,4 +1,4 @@
-import { blockKind, parseMarkdownImage } from './article.js'
+import { blockKind, parseMarkdownGallery, parseMarkdownImage } from './article.js'
 import { MARKDOWN_TARGETS } from './derive-shared.js'
 import { feishuImageUrls } from './markdown-images.js'
 import { parseSvgCardBlock } from './svg-cards.js'
@@ -139,6 +139,15 @@ export function portableBlocks(article, { target = 'blog', fixedLines = [] } = {
 
     if (fixedSet.has(trimmed)) return
     if ([...trimmed].length <= 40 && CTA_BLOCK_RE.test(trimmed)) return
+
+    const gallery = parseMarkdownGallery(trimmed)
+    if (gallery) {
+      blocks.push({
+        id: block.id,
+        text: gallery.map(item => `![${item.caption}](${item.src})`).join('\n\n'),
+      })
+      return
+    }
 
     if (!parseMarkdownImage(trimmed)) {
       const video = VIDEO_PLACEHOLDER_RE.exec(trimmed)

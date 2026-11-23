@@ -185,6 +185,20 @@ body[data-ds-dark-theme] .ws-root { color-scheme: dark; --ok: #6fcb9c; --bad: #f
 .ws-paper-image { display: grid; justify-items: center; gap: 5px; }
 .ws-paper-image img { display: block; max-width: 100%; max-height: 420px; width: auto; height: auto; border-radius: 8px; object-fit: contain; }
 .ws-paper-image.is-long img { max-height: 550px; }
+.ws-paper-gallery { display: grid; gap: 10px; min-width: 0; }
+.ws-paper-gallery-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.ws-paper-gallery-badge { display: inline-block; padding: 3px 9px; border-radius: 3px; background: var(--gallery-badge-bg); color: var(--gallery-badge-text); overflow-wrap: anywhere; font-size: 11px; font-weight: 800; letter-spacing: 1.4px; line-height: 1.3; }
+.ws-paper-gallery.is-dark { background: #0f1218; border-radius: 8px; padding: 10px; }
+.ws-paper-gallery.is-dark .ws-paper-gallery-caption { color: #8b95a3; }
+.ws-paper-gallery-badge.is-zen { font-family: "Songti SC", STSong, serif; }
+.ws-paper-gallery-hint { flex-shrink: 0; font-size: 12px; color: var(--gallery-count); letter-spacing: .4px; }
+.ws-paper-gallery-track { display: flex; gap: 10px; overflow-x: auto; padding-bottom: 4px; scroll-snap-type: x mandatory; }
+.ws-paper-gallery-item { flex: 0 0 86%; min-width: 0; display: grid; gap: 6px; align-content: start; scroll-snap-align: start; scroll-snap-stop: always; }
+.ws-paper-gallery-item:last-child { scroll-snap-align: end; }
+.ws-paper-gallery-item.is-single { flex-basis: 100%; }
+.ws-paper-gallery-item img { display: block; width: 100%; max-height: 420px; height: auto; border-radius: 4px; object-fit: cover; }
+.ws-paper-gallery-fallback { min-height: 120px; display: grid; place-content: center; text-align: center; }
+.ws-paper-gallery-caption { text-align: left; overflow-wrap: anywhere; font-size: 13px; line-height: 1.5; color: #6b7280; }
 .ws-paper-caption { color: #61646c; font-size: 12px; line-height: 18px; text-align: center; overflow-wrap: anywhere; }
 .ws-rule { border: 0; border-top: 1px solid var(--paper-line); margin: 12px 0; }
 .ws-live { white-space: pre-wrap; overflow-wrap: anywhere; min-height: 200px; }
@@ -343,6 +357,13 @@ body[data-ds-dark-theme] .ws-root { color-scheme: dark; --ok: #6fcb9c; --bad: #f
 .ws-local-image-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .ws-local-image-actions > span { flex-basis: 100%; overflow-wrap: anywhere; }
 .ws-card-insert input[readonly] { background: var(--panel); color: var(--ink2); }
+.ws-gallery-insert { width: min(560px, calc(100% - 24px)); }
+.ws-gallery-url-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: end; }
+.ws-gallery-list { display: grid; gap: 8px; max-height: 260px; overflow-y: auto; padding-right: 2px; }
+.ws-gallery-row { display: grid; grid-template-columns: auto 48px minmax(0, 1fr) auto; gap: 8px; align-items: center; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+.ws-gallery-index { font-size: 12px; font-weight: 700; color: var(--ink2); min-width: 28px; text-align: center; }
+.ws-gallery-thumb { width: 48px; height: 48px; object-fit: cover; border-radius: 6px; background: #fff; border: 1px solid var(--line); }
+.ws-gallery-row-actions { display: flex; align-items: center; gap: 2px; }
 .ws-revision-dialog { width: min(980px, calc(100% - 24px)); max-width: none; max-height: min(82dvh, 850px); margin: auto; padding: 0; gap: 0; overflow: hidden; color: var(--ink); }
 .ws-revision-dialog:not([open]) { display: none; }
 .ws-revision-dialog::backdrop { background: rgb(0 0 0 / .38); }
