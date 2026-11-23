@@ -340,7 +340,7 @@ export function CustomCoverStyleWizard() {
         name: res.draft.name,
         description: res.draft.description,
         usePortrait: res.draft.usePortrait,
-        useStyleReference: res.draft.usePortrait ? false : prev.useStyleReference,
+        useStyleReference: res.draft.usePortrait ? false : (prev.referenceImages.length > 0 ? true : prev.useStyleReference),
         template: res.draft.template,
         guidance: res.draft.guidance,
       }))
@@ -387,6 +387,8 @@ export function CustomCoverStyleWizard() {
     }
     setBusy('test-start')
     try {
+      const cleanTitle = testTitle.trim() || DEFAULT_TEST_COVER_TITLE
+      const matchesCurrentArticle = Boolean(currentArticle?.title?.trim()) && cleanTitle === currentArticle.title.trim()
       const job = await startCustomCoverStyleTest({
         draft: {
           id: draft.id || undefined,
@@ -399,8 +401,8 @@ export function CustomCoverStyleWizard() {
         styleReferenceImage: (!draft.usePortrait && draft.useStyleReference && draft.referenceImages[0])
           ? draft.referenceImages[0]
           : undefined,
-        testTitle: testTitle.trim() || DEFAULT_TEST_COVER_TITLE,
-        testMarkdown: articlePreviewMarkdown(currentArticle),
+        testTitle: cleanTitle,
+        testMarkdown: matchesCurrentArticle ? articlePreviewMarkdown(currentArticle) : '',
         resolution,
       })
       if (job?.jobId) setTestJobId(job.jobId)
@@ -771,6 +773,18 @@ export function CustomCoverStyleWizard() {
                         ? '未重新试生成时，保存将保留原有预览缩略图。'
                         : '也可跳过试生成直接保存，列表将先展示文字预览卡。'}
                 </p>
+
+                {draft.lastTestPrompt ? (
+                  <details className="ws-custom-cover-advanced">
+                    <summary>
+                      <span>查看本次试生成的完整提示词</span>
+                      <small className="ws-muted">{draft.lastTestPrompt.length} 字</small>
+                    </summary>
+                    <div className="ws-custom-cover-advanced-body">
+                      <textarea rows={6} readOnly value={draft.lastTestPrompt} />
+                    </div>
+                  </details>
+                ) : null}
               </div>
             </div>
 

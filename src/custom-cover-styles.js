@@ -805,7 +805,7 @@ function buildAnalyzeSystemPrompt(blocklistTerms, isRefine) {
       '8. 结尾固定：ASPECT RATIO: 21:9 (wide cinematic banner format)',
     ].join('\n'),
     '硬性质量与隔离要求：',
-    `1. template 必须包含至少 ${CUSTOM_COVER_STYLE_LIMITS.minSlots} 个 {{...}} 动态占位符（至少覆盖主标题和画面核心视觉元素），便于后续每篇不同文章填空复用。`,
+    `1. template 必须包含至少 ${CUSTOM_COVER_STYLE_LIMITS.minSlots} 个 {{...}} 动态占位符（至少覆盖主标题和画面核心视觉元素），建议控制在 3～6 个核心槽位，克制极小字装饰，确保手机卡片缩略图下依然清晰易读。`,
     '2. 【严格隔离 template 与 guidance】template 在替换 {{...}} 后会原文直接发给生图模型，因此 template 中严禁出现任何括号举例（如"例如..."、"比如 Kimi 对应月球"）、元说明（如"根据文章主题选择"）、或"可选/建议/可以"这类不确定措辞！所有字数建议、选材规则、具体联想案例（如 Kimi→月球）必须全部写进 guidance 字段。',
     '3. 当 usePortrait 为 true 时，template 必须在人物描述处使用 [[SUBJECT]] 与 [[OUTFIT]]（英文模板）或 [[人物]] 与 [[服装]]（中文模板），由宿主按用户设置填入博主本人与服装，绝不能写死固定性别、长相或服装。',
     '4. 当 usePortrait 为 false 时，template 中不得包含 [[SUBJECT]]、[[OUTFIT]]、[[人物]]、[[服装]]、[[玩偶]] 或真人肖像参考图描述。',
