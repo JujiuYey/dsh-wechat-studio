@@ -779,12 +779,25 @@ function validateReferenceImages(rawList) {
   return out
 }
 
-function buildAnalyzeSystemPrompt(blocklistTerms, isRefine) {
+function buildAnalyzeSystemPrompt(blocklistTerms, isRefine, imageCount = 0) {
+  const isMultiImage = imageCount > 1
   return [
     '你是一位资深视觉设计师兼生图提示词架构师，负责把用户提供的封面参考图和/或文字诉求拆解成一套工程级、可长期复用的 21:9 公众号宽幅封面提示词模板。',
     isRefine
       ? '当前处于「自然语言微调模式」：请以用户提供的最新草稿（可能已被用户手动编辑过）为基线，只根据用户的微调指令做针对性调整，保留用户满意的其他设定，不要推倒重来；同时保持分块结构化写法。'
-      : '当前处于「新建拆解模式」：请像视觉艺术总监一样精确反推参考图（如有）与用户诉求的可迁移视觉语言——底色与材质颗粒、精确 HEX 色值与禁止漂移色、版面分区百分比与留白边距、字体字重/倾斜/描边/底块、核心视觉主体的媒介形态与光影关系、以及必须禁止的干扰元素。严禁把参考图里的原文章标题、原品牌名、原具体道具名称、原陌生人的相貌和衣服写死进模板。',
+      : '当前处于「新建拆解模式」：请像视觉艺术总监一样精确反推参考图（如有）与用户诉求的可迁移视觉语言——底色与材质颗粒、精确 HEX 色值与禁止漂移色、版面分区百分比与留白边距、字体字重/倾斜/描边/底块、核心视觉主体的媒介形态与光影关系、以及必须禁止的干扰元素。严禁把参考图里的原文章标题、原品牌名、原具体道具名称、原陌生人的相貌和衣服，以及仅属于原参考图那一篇文章的具体场景、地貌、天体、建筑、动物或特定符号（如月球、山脉、特定剪影、特定撕裂卡片等）写死进模板。',
+    ...(isMultiImage
+      ? [[
+          `【多张参考图综合分析规则（当前共 ${imageCount} 张：ref-1 ～ ref-${imageCount}）】`,
+          `1. 必须逐张审视全部 ${imageCount} 张参考图，综合提炼整套视觉方案；严禁只照搬第一张图（ref-1）而忽略其余参考图。`,
+          '2. 若用户的文字诉求明确指定了各图分工（例如“图 1 的字体 + 图 2 的构图 + 图 3 的配色”），严格按指定维度融合；否则将多张图视为同一系列的多个样张，明确区分「跨图共性」与「图间差异」：',
+          '   - 跨图共性（如共同的整体调性、是否真人出镜、大标题体量与可读性、明暗光影基调、留白规范）→ 固定写进 template，作为整套风格的统一基因。',
+          '   - 图间差异（如不同样张采用了不同配色方案、不同标题文字颜色、不同人物站位/版式构图、或不同视觉媒介如 3D 道具 / 实景互动 / 扁平 UI 卡片）→ 严禁强行锁死成单一样张的做法，应把这些可变维度抽成清晰的 {{...}} 槽位（例如当各参考图标题颜色不同时，明确拆出 {{标题主色}} / {{标题高亮色}} 等显式槽位，不要只写模糊的 "scheme color"），并在 guidance 中给出各参考图对应的色板/构图/媒介示例以及「按文章主题与核心道具动态选色」的原则（不要强制限定只能从 2-3 个打包套餐里死选，避免同类文章反复撞色）。',
+          '   - 固定文本不要与多图变体自相矛盾（例如若参考图同时包含明亮浅底与深色底，就不要在固定描述里写死 high-key/bright base）。',
+          '3. NEGATIVES / NOT 排除项只能排除所有参考图共同回避的干扰，严禁禁用任意一张参考图中合法出现的视觉元素或媒介。',
+          '4. name 与 description 必须概括整套多图系列的共同风格定位，不得只描述单张样张的局部特征。',
+        ].join('\n')]
+      : []),
     '输出必须是严格合法的单个 JSON 对象，不得包含多余说明：',
     JSON.stringify({
       name: '简短中文风格名（1-16字）',
@@ -795,21 +808,22 @@ function buildAnalyzeSystemPrompt(blocklistTerms, isRefine) {
     }, null, 2),
     '【template 必须采用的工程级分块结构（优先英文结构标签 + 简洁精确的视觉指令，中文文字槽位放在引号内）】',
     [
-      '1. 开篇 1-2 句：A wide-format 21:9 article cover banner... 精准定义媒介与审美气质（如 flat risograph/screen-print poster / dark cinematic movie poster / clean editorial paper collage）。',
-      '2. COLOR SYSTEM (fixed): 列出 Background、Primary type、Accent 的精确 HEX 色值，并写明 NOT ... 排除容易漂移的颜色（如 NOT navy, NOT purple, NOT neon）。',
-      '3. LAYOUT: 用精确百分比描述左右或上下分区、层级与视觉重心，并强制保留上下左右安全留白（keep all text and focal elements well inside the central safe area with breathing room from top and bottom edges），避免大字贴边被裁切。',
+      '1. 开篇 1-2 句：A wide-format 21:9 article cover banner... 精准定义媒介与审美气质（如 flat risograph/screen-print poster / dark cinematic movie poster / clean editorial paper collage）；若多图包含多种媒介变体，开篇定义共同审美基调，由槽位承接具体媒介。',
+      '2. COLOR SYSTEM (fixed): 列出 Background、Primary type、Accent 的精确 HEX 色值，并写明 NOT ... 排除容易漂移的颜色（如 NOT navy, NOT purple, NOT neon）；若多张参考图本身采用多套色系，则固定共性明暗基调与禁用色，把可变配色抽成槽位并在 guidance 中列出各套精确 HEX 方案。',
+      '3. LAYOUT: 用精确百分比描述左右或上下分区、层级与视觉重心，并强制保留上下左右安全留白（keep all text and focal elements well inside the central safe area with breathing room from top and bottom edges），避免大字贴边被裁切；若多图存在多种版式构图，则固定标题安全区与留白，将构图变体抽成槽位并在 guidance 中说明。',
       '4. TYPOGRAPHY: 写清字重、是否斜体、字距、描边/阴影/高亮底块/双色拆分方式；若标题中有强调色词，必须拆成明确的两个槽位（例如 "{{主标题普通部分}}" in white + "{{主标题高亮词}}" in #FF5A3C），不要只写模糊的"可搭配强调色"。',
-      '5. VISUAL SUBJECT: 写清主视觉的呈现媒介（平涂矢量/粗颗粒版画/电影级暗调写实/微缩手作等）、尺寸占比、空间前后层次与打光方式，并用 {{...}} 承接动态主体。',
+      '5. VISUAL SUBJECT: 写清主视觉的呈现媒介（平涂矢量/粗颗粒版画/电影级暗调写实/微缩手作等）、尺寸占比、空间前后层次、构图手法（如巨物尺度反差、局部特写等）与打光方式，并用 {{...}} 承接整块动态场景与核心主体；严禁把参考图原文章的具体景物/地貌/天体/建筑写死为固定背景，确保不同主题文章能按内容生成完全贴合的新场景；若多图跨媒介表现，则固定统一质感底线（如真人写实度、主体清晰度），由槽位与 guidance 分支承接具体媒介形态。',
       '6. TEXT IN THE IMAGE (render exactly these texts, each only once, and no other text): 逐行编号列出画面里唯一允许出现的全部文字槽位（含颜色与底块），并在末尾写明：Do not render any hex codes, color names, layout labels, or extra unreadable UI text.',
-      '7. STYLE & NEGATIVES: 写清核心材质与光影，以及与参考图匹配的负向排除项（例如扁平风必须写 no 3D, no gradients, no photorealism；无 UI 截图风写 no tiny gibberish screen text, no cluttered icons；固定写 no author watermark or signature text）。',
+      '7. STYLE & NEGATIVES: 写清核心材质与光影，以及与参考图匹配的负向排除项（例如扁平风必须写 no 3D, no gradients, no photorealism；无 UI 截图风写 no tiny gibberish screen text, no cluttered icons；固定写 no author watermark or signature text；多图场景下不得禁用任意一张参考图的合法元素）。',
       '8. 结尾固定：ASPECT RATIO: 21:9 (wide cinematic banner format)',
     ].join('\n'),
     '硬性质量与隔离要求：',
-    `1. template 必须包含至少 ${CUSTOM_COVER_STYLE_LIMITS.minSlots} 个 {{...}} 动态占位符（至少覆盖主标题和画面核心视觉元素），建议控制在 3～6 个核心槽位，克制极小字装饰，确保手机卡片缩略图下依然清晰易读。`,
-    '2. 【严格隔离 template 与 guidance】template 在替换 {{...}} 后会原文直接发给生图模型，因此 template 中严禁出现任何括号举例（如"例如..."、"比如 Kimi 对应月球"）、元说明（如"根据文章主题选择"）、或"可选/建议/可以"这类不确定措辞！所有字数建议、选材规则、具体联想案例（如 Kimi→月球）必须全部写进 guidance 字段。',
-    '3. 当 usePortrait 为 true 时，template 必须在人物描述处使用 [[SUBJECT]] 与 [[OUTFIT]]（英文模板）或 [[人物]] 与 [[服装]]（中文模板），由宿主按用户设置填入博主本人与服装，绝不能写死固定性别、长相或服装。',
-    '4. 当 usePortrait 为 false 时，template 中不得包含 [[SUBJECT]]、[[OUTFIT]]、[[人物]]、[[服装]]、[[玩偶]] 或真人肖像参考图描述。',
-    `5. template 中严禁出现以下封面禁用词（含否定写法）：${blocklistTerms.join(', ')}`,
+    `1. template 必须包含至少 ${CUSTOM_COVER_STYLE_LIMITS.minSlots} 个 {{...}} 动态占位符（至少覆盖主标题和画面核心视觉元素），建议控制在 ${isMultiImage ? '3～7' : '3～6'} 个核心槽位，克制极小字装饰，确保手机卡片缩略图下依然清晰易读。`,
+    '2. 【严格隔离 template 与 guidance】template 在替换 {{...}} 后会原文直接发给生图模型，因此 template 中严禁出现任何括号举例（如"例如..."、"比如 Kimi 对应月球"）、元说明（如"根据文章主题选择"）、或"可选/建议/可以"这类不确定措辞！所有字数建议、选材规则、具体联想案例（如 Kimi→月球）以及多图变体分支清单必须全部写进 guidance 字段。',
+    '3. 【风格骨架与题材场景解耦】参考图里的具体世界观与景物（例如某张图里的月球、荒原山脉、太空舱、办公室桌椅或某个动物/建筑）往往只是原图针对特定文章设计的视觉隐喻，而不是固定背景布。template 只应固定可迁移的视觉风格骨架（媒介、光影、配色、排版、尺度张力），必须把具体场景与中心意象抽成 {{...}} 槽位，让后续填词模型根据每篇文章内容自由生成不同的对应场景；原图的隐喻思路仅可作为示例写进 guidance。',
+    '4. 当 usePortrait 为 true 时，template 必须在人物描述处使用 [[SUBJECT]] 与 [[OUTFIT]]（英文模板）或 [[人物]] 与 [[服装]]（中文模板），由宿主按用户设置填入博主本人与服装，绝不能写死固定性别、长相或服装。',
+    '5. 当 usePortrait 为 false 时，template 中不得包含 [[SUBJECT]]、[[OUTFIT]]、[[人物]]、[[服装]]、[[玩偶]] 或真人肖像参考图描述。',
+    `6. template 中严禁出现以下封面禁用词（含否定写法）：${blocklistTerms.join(', ')}`,
   ].join('\n\n')
 }
 
@@ -839,7 +853,10 @@ export async function analyzeCustomCoverStyle(ctx, { referenceImages = [], requi
   }
 
   const terms = await loadCoverBlocklist()
-  const system = buildAnalyzeSystemPrompt(terms, isRefine)
+  const system = buildAnalyzeSystemPrompt(terms, isRefine, images.length)
+  const multiImageFields = images.length > 1
+    ? { referenceImageCount: images.length, multiImagePolicy: 'synthesize-all' }
+    : {}
   const baseUser = isRefine
     ? JSON.stringify({
       mode: 'refine',
@@ -853,11 +870,13 @@ export async function analyzeCustomCoverStyle(ctx, { referenceImages = [], requi
       adjustment: cleanAdjustment,
       originalRequirement: cleanRequirement,
       referenceImageIds: images.map(item => item.id),
+      ...multiImageFields,
     })
     : JSON.stringify({
       mode: 'create',
       requirement: cleanRequirement,
       referenceImageIds: images.map(item => item.id),
+      ...multiImageFields,
     })
 
   let issue = ''

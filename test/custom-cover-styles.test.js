@@ -769,4 +769,41 @@ test('analyzeCustomCoverStyle：拆解 system prompt 包含工程分块规范与
   assert.match(seen[0].system, /TEXT IN THE IMAGE/)
   assert.match(seen[0].system, /STYLE & NEGATIVES/)
   assert.match(seen[0].system, /严格隔离 template 与 guidance/)
+  assert.match(seen[0].system, /风格骨架与题材场景解耦/)
+  assert.doesNotMatch(seen[0].system, /多张参考图综合分析规则/)
+})
+
+test('analyzeCustomCoverStyle：多张参考图时注入多图综合分析规则并透传全部参考图与标记', async () => {
+  const ref1 = `data:image/png;base64,${makePng(94, 40).toString('base64')}`
+  const ref2 = `data:image/png;base64,${makePng(96, 40).toString('base64')}`
+  const ref3 = `data:image/png;base64,${makePng(98, 40).toString('base64')}`
+  const seen = []
+  const ctx = mockLlmCtx({
+    replies: [{
+      name: '博主科技系列风',
+      description: '真人互动与多变体媒介结合的明快科技教程系列封面',
+      usePortrait: true,
+      template: 'A wide-format 21:9 banner. Color {{配色方案}}, layout {{构图}}, title "{{主标题}}", subject {{视觉主体}}, person [[SUBJECT]] wearing [[OUTFIT]].',
+      guidance: '配色与构图按文章主题从三种分支中择一',
+    }],
+    onCall: req => seen.push(req),
+  })
+  const res = await analyzeCustomCoverStyle(ctx, {
+    referenceImages: [ref1, ref2, ref3],
+    requirement: '',
+  })
+  assert.equal(seen.length, 1)
+  assert.match(seen[0].system, /多张参考图综合分析规则（当前共 3 张：ref-1 ～ ref-3）/)
+  assert.match(seen[0].system, /严禁只照搬第一张图（ref-1）/)
+  assert.match(seen[0].system, /跨图共性/)
+  assert.match(seen[0].system, /图间差异/)
+  assert.match(seen[0].system, /按文章主题与核心道具动态选色/)
+  assert.match(seen[0].system, /严禁禁用任意一张参考图中合法出现的视觉元素或媒介/)
+  const userPayload = JSON.parse(seen[0].messages[0].content[0].text)
+  assert.deepEqual(userPayload.referenceImageIds, ['ref-1', 'ref-2', 'ref-3'])
+  assert.equal(userPayload.referenceImageCount, 3)
+  assert.equal(userPayload.multiImagePolicy, 'synthesize-all')
+  const imageParts = seen[0].messages[0].content.filter(part => part.type === 'image')
+  assert.equal(imageParts.length, 3)
+  assert.equal(res.draft.usePortrait, true)
 })

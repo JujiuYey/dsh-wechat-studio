@@ -5,6 +5,7 @@ import {
   applyTestJobToDraft,
   buildRefinePayload,
   buildSavePayload,
+  canUseStyleReference,
   createWizardDraft,
   isWizardDirty,
   markPreviewStaleOnDraftChange,
@@ -178,4 +179,24 @@ test('buildSavePayload：严格按 试生成样图 > 本次新上传参考图 > 
   const p6 = buildSavePayload(portraitDraft, 'create')
   assert.equal(p6.useStyleReference, false)
   assert.equal('styleReferenceImage' in p6, false)
+
+  // 6. 多张参考图禁用 styleReference（禁止沿用首图拉偏多图风格），单张或编辑旧单图风格允许按需开启
+  assert.equal(canUseStyleReference(createWizardDraft({ referenceImages: [ref1] })), true)
+  assert.equal(canUseStyleReference(createWizardDraft({ hasStyleReference: true })), true)
+  assert.equal(canUseStyleReference(createWizardDraft({ referenceImages: [ref1, ref2] })), false)
+  assert.equal(canUseStyleReference(createWizardDraft({ referenceImages: [ref1, ref2], hasStyleReference: true })), false)
+  assert.equal(canUseStyleReference(createWizardDraft({ referenceImages: [ref1], usePortrait: true })), false)
+
+  const multiRefDraft = createWizardDraft({
+    name: '多图系列风',
+    description: '描',
+    usePortrait: false,
+    useStyleReference: true,
+    template: '21:9 {{a}} {{b}}',
+    referenceImages: [ref1, ref2],
+  })
+  assert.equal(multiRefDraft.useStyleReference, false)
+  const p7 = buildSavePayload({ ...multiRefDraft, useStyleReference: true }, 'create')
+  assert.equal(p7.useStyleReference, false)
+  assert.equal('styleReferenceImage' in p7, false)
 })

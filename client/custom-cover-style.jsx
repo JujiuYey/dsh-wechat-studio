@@ -5,6 +5,7 @@ import {
   applyTestJobToDraft,
   buildRefinePayload,
   buildSavePayload,
+  canUseStyleReference,
   createWizardDraft,
   DEFAULT_TEST_COVER_TITLE,
   isWizardDirty,
@@ -307,10 +308,14 @@ export function CustomCoverStyleWizard() {
       for (const file of picked) {
         encoded.push(await compressReferenceImageFile(file))
       }
-      patchDraft(prev => ({
-        ...prev,
-        referenceImages: [...prev.referenceImages, ...encoded.filter(Boolean)].slice(0, CUSTOM_COVER_STYLE_LIMITS.maxReferenceImages),
-      }))
+      patchDraft(prev => {
+        const nextImages = [...prev.referenceImages, ...encoded.filter(Boolean)].slice(0, CUSTOM_COVER_STYLE_LIMITS.maxReferenceImages)
+        return {
+          ...prev,
+          referenceImages: nextImages,
+          useStyleReference: nextImages.length > 1 ? false : prev.useStyleReference,
+        }
+      })
     } catch (err) {
       toast(err.message, true)
     } finally {
@@ -340,7 +345,7 @@ export function CustomCoverStyleWizard() {
         name: res.draft.name,
         description: res.draft.description,
         usePortrait: res.draft.usePortrait,
-        useStyleReference: res.draft.usePortrait ? false : (prev.referenceImages.length > 0 ? true : prev.useStyleReference),
+        useStyleReference: false,
         template: res.draft.template,
         guidance: res.draft.guidance,
       }))
@@ -366,7 +371,7 @@ export function CustomCoverStyleWizard() {
         name: res.draft.name,
         description: res.draft.description,
         usePortrait: res.draft.usePortrait,
-        useStyleReference: res.draft.usePortrait ? false : prev.useStyleReference,
+        useStyleReference: (res.draft.usePortrait || prev.referenceImages.length > 1) ? false : prev.useStyleReference,
         template: res.draft.template,
         guidance: res.draft.guidance,
       }))
@@ -389,6 +394,7 @@ export function CustomCoverStyleWizard() {
     try {
       const cleanTitle = testTitle.trim() || DEFAULT_TEST_COVER_TITLE
       const matchesCurrentArticle = Boolean(currentArticle?.title?.trim()) && cleanTitle === currentArticle.title.trim()
+      const allowStyleRef = canUseStyleReference(draft) && Boolean(draft.useStyleReference)
       const job = await startCustomCoverStyleTest({
         draft: {
           id: draft.id || undefined,
@@ -396,9 +402,9 @@ export function CustomCoverStyleWizard() {
           template: draft.template,
           guidance: draft.guidance,
           usePortrait: draft.usePortrait,
-          useStyleReference: !draft.usePortrait && Boolean(draft.useStyleReference),
+          useStyleReference: allowStyleRef,
         },
-        styleReferenceImage: (!draft.usePortrait && draft.useStyleReference && draft.referenceImages[0])
+        styleReferenceImage: (allowStyleRef && draft.referenceImages.length === 1)
           ? draft.referenceImages[0]
           : undefined,
         testTitle: cleanTitle,
@@ -607,7 +613,7 @@ export function CustomCoverStyleWizard() {
                   <span>包含博主本人出镜（自动使用「设置 · 封面生成」中的人物参考照与服装设定）</span>
                 </label>
 
-                {!draft.usePortrait && (draft.referenceImages.length > 0 || draft.hasStyleReference) ? (
+                {canUseStyleReference(draft) ? (
                   <label className="ws-check ws-custom-cover-portrait-toggle">
                     <input
                       type="checkbox"
@@ -615,7 +621,7 @@ export function CustomCoverStyleWizard() {
                       disabled={busy === 'refine'}
                       onChange={e => patchDraft({ useStyleReference: e.target.checked })}
                     />
-                    <span>生图时携带首张参考图作为风格参考（质感与字体更贴近原图；若出现原图文字残留可关闭）</span>
+                    <span>生图时携带该参考图作为风格参考（默认关闭；仅单张参考图且文字难以还原特殊纹理时按需开启）</span>
                   </label>
                 ) : null}
 

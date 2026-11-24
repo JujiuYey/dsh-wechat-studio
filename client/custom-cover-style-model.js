@@ -2,20 +2,28 @@
 
 export const DEFAULT_TEST_COVER_TITLE = '我用 AI 搭了一套自动化写作流'
 
+export function canUseStyleReference(draft) {
+  if (!draft || draft.usePortrait) return false
+  const refCount = Array.isArray(draft.referenceImages) ? draft.referenceImages.length : 0
+  if (refCount > 1) return false
+  return refCount === 1 || Boolean(draft.hasStyleReference)
+}
+
 export function createWizardDraft(initial = {}) {
   const src = initial && typeof initial === 'object' ? initial : {}
   const usePortrait = Boolean(src.usePortrait)
+  const referenceImages = Array.isArray(src.referenceImages) ? [...src.referenceImages] : []
   return {
     id: typeof src.id === 'string' ? src.id : '',
     name: typeof src.name === 'string' ? src.name : '',
     description: typeof src.description === 'string' ? src.description : '',
     usePortrait,
-    useStyleReference: !usePortrait && Boolean(src.useStyleReference),
+    useStyleReference: !usePortrait && referenceImages.length <= 1 && Boolean(src.useStyleReference),
     hasStyleReference: Boolean(src.hasStyleReference),
     userRequirement: typeof src.userRequirement === 'string' ? src.userRequirement : '',
     template: typeof src.template === 'string' ? src.template : '',
     guidance: typeof src.guidance === 'string' ? src.guidance : '',
-    referenceImages: Array.isArray(src.referenceImages) ? [...src.referenceImages] : [],
+    referenceImages,
     previewUrl: typeof src.previewUrl === 'string' ? src.previewUrl : null,
     previewDraftToken: typeof src.previewDraftToken === 'string' ? src.previewDraftToken : null,
     previewStale: Boolean(src.previewStale),
@@ -85,7 +93,7 @@ export function buildRefinePayload(current, adjustment) {
 
 export function buildSavePayload(current, mode = 'create') {
   const usePortrait = Boolean(current?.usePortrait)
-  const useStyleReference = !usePortrait && Boolean(current?.useStyleReference)
+  const useStyleReference = canUseStyleReference(current) && Boolean(current?.useStyleReference)
   const payload = {
     name: typeof current?.name === 'string' ? current.name.trim() : '',
     description: typeof current?.description === 'string' ? current.description.trim() : '',
@@ -98,7 +106,7 @@ export function buildSavePayload(current, mode = 'create') {
   if (mode === 'edit' && current?.id) {
     payload.id = current.id
   }
-  if (Array.isArray(current?.referenceImages) && current.referenceImages.length > 0 && !usePortrait) {
+  if (Array.isArray(current?.referenceImages) && current.referenceImages.length === 1 && !usePortrait) {
     payload.styleReferenceImage = current.referenceImages[0]
   }
   if (current?.previewDraftToken) {
